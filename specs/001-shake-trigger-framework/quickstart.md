@@ -20,6 +20,11 @@ machine and copy `subprojects/` over.
 
 ## 2. Configure
 
+Skip this step entirely if you like: running shaker without a config file
+**auto-creates the documented defaults** at
+`~/.config/shaker/config.toml` and just runs (contract §1). If you want
+explicit control:
+
 ```sh
 mkdir -p ~/.config/shaker
 cat > ~/.config/shaker/config.toml <<'EOF'
@@ -87,7 +92,7 @@ systemctl --user enable --now shaker
 | US2-1 sensitivity tuning | halve sensitivity; milder shake | now triggers (wasn't) |
 | US2-2 cooldown | cooldown = 5.0; shake at +1s, +5.1s, +6s | only +5.1s+ triggers (continuous shakes suppressed — G-3) |
 | US2-3 duration | shake fast but shorter than duration | no trigger (G-2) |
-| US3-1 missing file | `mv config.toml config.toml.bak` | stderr names path; exit 1; no monitoring |
+| US3-1 missing file | `rm` the config file (`config.toml.bak` backup kept) | file auto-created with defaults + info stderr note; daemon runs; nothing is overwritten if user config exists. Unwritable location → `cannot write default config` + exit 1 |
 | US3-2 broken config | `duration = -1` | stderr: `key "duration" must be > 0`; exit 1 |
 | US3-3 partial config | remove numbers, keep command | starts; defaults shown in `--help`/docs; trigger works (SC-003) |
 | FR-013/14 | unplug/replug device (`[−]`,`[+]` lines) | detection resumes ≤ 2 s (SC-004); waits at startup when absent |

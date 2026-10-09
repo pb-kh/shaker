@@ -94,6 +94,20 @@ post-check).
   by the spec; `XDG_CONFIG_HOME=/tmp/... ./build/shaker` covers test and
   multi-user cases. Rejected for v1 (revisit at a future spec if needed).
 
+**Addendum (user-requested v1 amendment)**: a *missing* config file is now
+auto-initialized. shaker writes the documented default template (the
+contract §2 example values, including an example
+`command = "notify-send 'Shake detected'"`) after creating missing parent
+directories, logs one informational stderr note, and keeps running — a
+zero-config first run now works end-to-end. Constraints preserved from the
+original design: an existing unreadable file still errors, the
+required-`command` key rule still applies to *existing* files
+(no safe command default), and auto-initialization never overwrites an
+existing file. Template write failures are fatal:
+`cannot write default config '<path>'`. Implemented by
+`create_default_config()` in `src/config.cpp`; first-run behavior covered
+in `tests/test_config.cpp`.
+
 ## R-04: Shake detection definition and algorithm
 
 **Decision**: A shake is **motion sustained above a speed threshold for at

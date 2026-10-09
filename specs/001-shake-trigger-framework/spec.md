@@ -103,6 +103,11 @@ error messages, default substitutions, and a clean exit in the failing cases.
 3. **Given** a valid configuration omitting some settings, **When** the
    daemon starts, **Then** it runs using documented default values for the
    omitted settings.
+4. **Given** no configuration file exists, **When** the daemon starts,
+   **Then** it writes a documented default configuration to the expected
+   location and keeps running (US1 flows from that point); if the file
+   cannot be created (e.g. unwritable location), **Then** it exits with a
+   message naming the expected path and does not monitor any device.
 
 ---
 
@@ -155,8 +160,13 @@ error messages, default substitutions, and a clean exit in the failing cases.
   motions during that window MUST NOT result in extra executions.
 - **FR-010**: On invalid configuration structure or values, the daemon MUST
   report the problem clearly and exit without monitoring devices.
-- **FR-011**: On a missing configuration file, the daemon MUST report the
-  expected location clearly and exit without monitoring devices.
+- **FR-011**: On a configuration file missing at the expected location, the
+  daemon MUST write a documented default configuration there (creating the
+  needed parent directories) and continue with startup; if it cannot be
+  written, the daemon MUST report the expected location clearly and exit
+  without monitoring devices. An existing file that cannot be *read* MUST
+  still be reported as an error, and a file that exists but omits the
+  required `command` key remains an error (no safe command default).
 - **FR-012**: The daemon MUST supply documented default values for any
   configuration settings that are omitted from an otherwise valid file.
 - **FR-013**: The daemon MUST keep running when the monitored device is
@@ -231,8 +241,9 @@ error messages, default substitutions, and a clean exit in the failing cases.
   configuration, not untrusted input. This is v1, so no authentication,
   network, or remote-configuration features are in scope.
 - The configuration directory under the config home may not exist yet; the
-  daemon is not required to create it (the user creates it when installing
-  the config; error reporting guides them).
+  daemon creates the needed directories when auto-initializing a missing
+  config (v1 amendment), and clear error reporting guides the user when
+  creation is not possible.
 - Documentation will state the concrete config path for the target platform
   (typically `~/.config/shaker/config.toml`) and that a different config home
   environment setting changes the location accordingly.

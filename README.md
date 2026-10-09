@@ -44,7 +44,9 @@ Press Ctrl+C to quit (clean exit code 0).
 ## Configuration
 
 The daemon reads a TOML file at `XDG_CONFIG_HOME/shaker/config.toml`
-(defaulting to `~/.config/shaker/config.toml`):
+(defaulting to `~/.config/shaker/config.toml`). When the file does not
+exist, shaker **creates it with defaults** (creating missing directories)
+and runs — edit the generated `command` and restart to set the action.
 
 ```toml
 # How fast movement must be, in device units per second, to count toward a shake.
@@ -63,7 +65,8 @@ command = "notify-send 'Shake detected'"
 - `sensitivity`, `duration` and `cooldown` fall back to these defaults when
   omitted; `command` is the only **required** key.
 - Unknown keys are reported as warnings and ignored.
-- Broken/missing config files produce a precise error and exit code 1.
+- A broken or unreadable config file produces a precise error and exit
+  code 1.
 
 Calibrate your values with
 

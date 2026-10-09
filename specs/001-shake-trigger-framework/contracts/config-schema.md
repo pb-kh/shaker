@@ -27,6 +27,16 @@ Resolution rules (implementation of the freedesktop basedir convention):
 4. The resolved absolute path is displayed verbatim in every configuration
    error.
 
+**Auto-initialization**: when the file does not exist, shaker writes a
+documented default configuration (the §2 example values) — creating missing
+parent directories — prints an informational stderr line, and keeps
+running (edit the generated `command` once, restart afterwards; there is no
+hot reload). If the file or its parent directory cannot be created, shaker
+exits with a `cannot write default config '<path>': …` error instead. An
+*existing* file that cannot be read (e.g. permissions) keeps failing with
+`cannot read '<path>': …` and auto-initialization never overwrites an
+existing file.
+
 Examples:
 - default: `~/.config/shaker/config.toml`
 - overriden for tests/portability:
@@ -83,9 +93,16 @@ Every configuration failure prints a single clear line on **stderr**, naming
 the resolved file path, and the daemon exits **without monitoring devices**
 (exit code 1). Categories, first match wins:
 
+- *A file that simply does not exist never reaches this ladder* — it is
+  auto-initialized with defaults (§1) and startup continues.
+- Unknown top-level keys print a non-fatal warning line
+  `shaker: config '<path>': ignoring unknown key "<key>"` (§2) and startup
+  continues.
+
 | # | Condition | stderr shape |
 |---|-----------|--------------|
-| 1 | file missing / unreadable | `shaker: cannot read '<path>': <errno reason>` |
+| 1 | existing file unreadable (permissions etc.) | `shaker: cannot read '<path>': <errno reason>` |
+| 1b | missing file that cannot be auto-created | `shaker: cannot write default config '<path>': <errno reason>` |
 | 2 | not valid TOML / syntax error | `shaker: config parse error '<path>': <parser message>` |
 | 3 | `command` missing or empty after parse | `shaker: config '<path>': key "command" is required` |
 | 4 | `sensitivity` ≤ 0 | `shaker: config '<path>': key "sensitivity" must be > 0 (got <value>)` |
