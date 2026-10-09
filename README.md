@@ -73,6 +73,45 @@ the physical back-and-forth motion, which keeps ordinary pointer use quiet.
 - A broken or unreadable config file produces a precise error and exit
   code 1.
 
+## The command is a full shell script
+
+`command` runs through `/bin/sh -c` with your environment and cwd
+inherited — anything sh can do, your shake can do. Use TOML literal
+strings (`'''…'''` multi-line or `'…'` single-line) so shell quoting
+survives untouched:
+
+```toml
+# single-line: note the TOML '…' wrapper keeps the inner double quotes
+command = 'grim -g "$(slurp)" "$HOME/Pictures/shake-$(date +%s).png"'
+```
+
+```toml
+# multi-line script ('''…'''): everything is verbatim — quotes, $(), #, \
+command = '''
+shot="$HOME/Pictures/shake-$(date +%s).png"
+grim -g "$(slurp)" "$shot"
+wl-copy -t image/png < "$shot"
+notify-send "Screenshot saved & copied: $shot"
+'''
+```
+
+**Quoting pitfall** (why `command = "grim -g '$(slurp)'"` does nothing):
+the single quotes are *shell-level* here — `sh -c` passes `$(slurp)`
+literally to `grim` and it fails on the bogus geometry. Command
+substitution needs double quotes at the shell level:
+`grim -g "$(slurp)"`. In TOML terms: wrap the command in TOML single
+quotes (`'…'` / `'''…'''`) and put shell double quotes where the shell
+needs them.
+
+If you use `"""…"""` (basic multi-line), TOML escape processing applies
+(`\n` becomes a real newline, `\` at end-of-line folds lines) — for
+shell text, prefer `'''`.
+
+Run shaker as your own user (the `input` group membership covers device
+access) so `WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR` reach Wayland clients like
+`grim`/`slurp`; under `sudo` those variables are stripped and the
+compositor is unreachable.
+
 Calibrate your values with
 
 ```sh

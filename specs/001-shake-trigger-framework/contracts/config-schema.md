@@ -57,11 +57,13 @@ Flat TOML document with four recognized top-level scalar keys:
 - Unknown top-level keys are **ignored** with a stderr warning line (does not
   fail the start).
 - Key order is irrelevant. No `[section]` tables are part of the v1 contract:
-  **parser scope** — only the flat `key = value` form above is accepted
-  (documented literal keys, numbers with `_` separators, quoted strings with
-  the common `\`-escapes, `#` comments incl. mid-line); every unsupported
-  TOML construct (tables, arrays, multi-line strings, dotted keys) fails
-  fast with a parse error naming the line (research R-01).
+  **parser scope** — the flat `key = value` form plus TOML strings:
+  single-line `"…"` (escapes processed) and `'…'` (verbatim), multi-line
+  `"""…"""` (escapes + EOL-backslash continuation) and `'''…'''`
+  (verbatim, first newline trimmed) — numbers with `_` separators, `#`
+  comments incl. mid-line; every unsupported TOML construct (tables,
+  arrays, dotted keys) fails fast with a parse error naming the line
+  (research R-01).
 - Comments and TOML quoting/escaping follow the TOML 1.0 specification
   (enforced by the parser, not this document).
 
@@ -132,7 +134,14 @@ configuration (FR-010 path).
 - **cooldown**: after a shake triggers, further shakes are ignored for
   this many seconds. `0.0` disables suppression. It applies in device
   event time.
-- **command**: executed by `/bin/sh -c` with cwd and environment inherited
-  from the daemon, every time a shake triggers — at most once per cooldown
-  window. A failing command does not stop the daemon (exit status of the
-  child is not tracked in v1; spawn failure is reported on stderr).
+- **command**: a **full shell script** executed by `/bin/sh -c` with cwd
+  and environment inherited from the daemon (otter-launcher-style
+  `exec_cmd = "sh -c"` semantics: pipes, subshells, `;`-sequences,
+  variable expansion, multiple lines via `'''…'''` all work), every time
+  a shake triggers — at most once per cooldown window. A failing script
+  does not stop the daemon (exit status of the child is not tracked in
+  v1; spawn failure and script output surface on the daemon's inherited
+  stderr/stdout). Quoting: wrap the command in a TOML literal string
+  (`'…'` / `'''…'''`) so shell-level `"` and `$()` reach the shell
+  untouched; selects like `grim -g "$(slurp)"` need the double quotes at
+  the *shell* level.

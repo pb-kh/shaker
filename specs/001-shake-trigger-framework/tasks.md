@@ -148,6 +148,16 @@ failures can no longer produce confusing jobs at runtime.
   tests: migrate-idempotent, hand-edited-untouched; research R-03
   Addendum 2
 - [x] T019 [US1] Detection semantics v2 (user-validated): replace the
+- [x] T021 [US2/US3] Full-sh command support (otter-launcher-style):
+  TOML multi-line strings in the parser (`'''` literal verbatim, `"""`
+  basic with escapes + EOL-backslash continuation, first-newline trim,
+  CRLF tolerance; terminator on the opening line; single-line
+  literal/basic unchanged) enabling full shell scripts as `command`
+  (`/bin/sh -c` path unchanged); wrong-type rejection for numeric keys,
+  unterminated/trailing-content errors, unknown-key warnings; user
+  config fixed to a working multi-line grim+slurp script; README quoting
+  cookbook + contract §2/§4 updates; tests: 8 new cases incl. the grim
+  regression
   sustained-speed window with direction-reversal counting (research R-04
   v2) — per-axis hysteresis over accumulated displacement (`sensitivity`
   = pointer units per swing leg, default 40.0), shake = 3 swings within

@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -166,7 +167,7 @@ struct ScanResult {
         ++i;
     }
     if (in_quote) {
-        return {.error = "multi-line strings are not accepted "
+        return {.error = "unterminated string (or unsupported construct) "
                          "in a shaker config"};
     }
     return {};
@@ -284,33 +285,272 @@ std::expected<Config, ConfigError> parse_config(
 {
     Config config;
 
+    // Multi-line string capture (''' literal / """ basic): the `command`
+    // value may be a full shell script (executed via /bin/sh -c), so
+    // natural multi-line shell text is accepted verbatim (literal) or with
+    // TOML escapes (basic).
+    enum class Capture { None, Literal, Basic };
+    Capture capture = Capture::None;
+    std::string captured;
+    std::string capture_key;
+    int capture_start_line = 0;
+    // Basic-string walker state across lines.
+    bool pending_escape = false;      // previous char was an escape backslash
+    bool pending_escape_trim = false; // backslash-newline: trim following ws
+
+    // Dispatch an already-unescaped string value to its key (multi-line
+    // strings only exist for the shell command; numeric keys reject them).
+    const auto dispatch_string = [&](const std::string& key,
+                                     const std::string& content,
+                                     [[maybe_unused]] int line_number)
+        -> std::optional<ConfigError>
+    {
+        if (key == "command") {
+            config.command = content;
+            return std::nullopt;
+        }
+        if (key == "sensitivity" || key == "duration" || key == "cooldown") {
+            return ConfigError{
+                .detail = "config '" + path + "': key \"" + key
+                              + "\" has wrong type: expected number",
+                .path = path,
+            };
+        }
+        if (warnings != nullptr) {
+            warnings->push_back("config '" + path + "': ignoring unknown key \""
+                                + key + "\"");
+        }
+        return std::nullopt;
+    };
+
+    const auto remainder_error = [&](std::string_view rest, int line_number)
+        -> std::optional<ConfigError>
+    {
+        if (!rest.empty() && rest.front() != '#') {
+            return parse_error_at(path, line_number,
+                                  "trailing content after the string terminator");
+        }
+        return std::nullopt;
+    };
+
     int line_number = 0;
     std::istringstream stream(contents);
     std::string raw_line;
     while (std::getline(stream, raw_line)) {
         ++line_number;
+        std::string_view line = raw_line;
+        // Normalize CRLF: getline keeps the carriage return.
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1);
+        }
+
+        // ---- continuation of a captured multi-line string ---------------
+        if (capture == Capture::Literal) {
+            const size_t term = line.find("'''");
+            if (term == std::string_view::npos) {
+                captured += line;
+                captured += '\n';
+                continue;
+            }
+            captured += line.substr(0, term);
+            const std::string_view rest = trim(line.substr(term + 3));
+            if (const auto err = remainder_error(rest, line_number); err) {
+                return std::unexpected(*err);
+            }
+            capture = Capture::None;
+            if (const auto err = dispatch_string(capture_key, captured,
+                                                 line_number);
+                err) {
+                return std::unexpected(*err);
+            }
+            continue;
+        }
+        if (capture == Capture::Basic) {
+            size_t term_pos = std::string_view::npos;
+            size_t i = 0;
+            for (; i < line.size(); ++i) {
+                const char c = line[i];
+                if (pending_escape) {
+                    pending_escape = false;
+                    switch (c) {
+                    case 'n': captured += '\n'; break;
+                    case 't': captured += '\t'; break;
+                    case 'r': captured += '\r'; break;
+                    case '"': captured += '"'; break;
+                    case '\\': captured += '\\'; break;
+                    default:
+                        return std::unexpected(parse_error_at(
+                            path, line_number,
+                            std::string("unsupported escape \\") + c));
+                    }
+                    continue;
+                }
+                if (pending_escape_trim) {
+                    // Line continuation: skip whitespace until content.
+                    if (std::isspace(static_cast<unsigned char>(c)) != 0) {
+                        continue;
+                    }
+                    pending_escape_trim = false;
+                }
+                if (c == '\\') {
+                    pending_escape = true;
+                    continue;
+                }
+                if (c == '"') {
+                    // Count consecutive quotes: three = terminator.
+                    size_t run = 1;
+                    while (i + run < line.size() && line[i + run] == '"') {
+                        ++run;
+                    }
+                    if (run >= 3) {
+                        term_pos = i;
+                        i += 2; // loop ++i lands after the terminator
+                        break;
+                    }
+                    captured.append(run, '"');
+                    i += run - 1;
+                    continue;
+                }
+                captured += c;
+            }
+            if (term_pos == std::string_view::npos) {
+                if (pending_escape) {
+                    // Backslash at end of line: trim the newline and the
+                    // following whitespace (TOML line continuation).
+                    pending_escape = false;
+                    pending_escape_trim = true;
+                } else if (!pending_escape_trim) {
+                    captured += '\n';
+                }
+                continue;
+            }
+            const std::string_view rest = trim(line.substr(term_pos + 3));
+            if (const auto err = remainder_error(rest, line_number); err) {
+                return std::unexpected(*err);
+            }
+            capture = Capture::None;
+            pending_escape_trim = false;
+            if (const auto err = dispatch_string(capture_key, captured,
+                                                 line_number);
+                err) {
+                return std::unexpected(*err);
+            }
+            continue;
+        }
+
+        // ---- fresh line --------------------------------------------------
+        // Probe for a multi-line string opening BEFORE scan_line: triple
+        // quotes leave scan_line's quote tracking unbalanced by design.
+        if (const size_t eq_probe = line.find('='); eq_probe != std::string_view::npos) {
+            const std::string_view key_probe = trim(line.substr(0, eq_probe));
+            const std::string_view value_probe = trim(line.substr(eq_probe + 1));
+            const bool command_line =
+                is_valid_key(key_probe) && key_probe != "sensitivity"
+                && key_probe != "duration" && key_probe != "cooldown";
+            if (command_line
+                && (value_probe.starts_with("'''")
+                    || value_probe.starts_with("\"\"\""))) {
+                const bool literal = value_probe.starts_with("'''");
+                std::string_view rest = value_probe.substr(3);
+                capture = literal ? Capture::Literal : Capture::Basic;
+                capture_key = std::string(key_probe);
+                capture_start_line = line_number;
+                captured.clear();
+
+                // Terminator on the opening line itself?
+                size_t term_pos = std::string_view::npos;
+                if (literal) {
+                    term_pos = rest.find("'''");
+                } else {
+                    // escape-aware scan for three consecutive quotes
+                    size_t run = 0;
+                    for (size_t i = 0; i < rest.size(); ++i) {
+                        if (rest[i] == '\\') {
+                            ++i; // skip escaped char
+                            continue;
+                        }
+                        if (rest[i] == '"') {
+                            ++run;
+                            if (run >= 3) {
+                                term_pos = i - 2;
+                                break;
+                            }
+                        } else {
+                            run = 0;
+                        }
+                    }
+                }
+                if (term_pos != std::string_view::npos) {
+                    // Full string on the opening line.
+                    if (literal) {
+                        captured = std::string(rest.substr(0, term_pos));
+                    } else {
+                        // Re-walk with escapes for the basic case.
+                        captured.clear();
+                        for (size_t i = 0; i < term_pos; ++i) {
+                            const char c = rest[i];
+                            if (c == '\\' && i + 1 < term_pos) {
+                                ++i;
+                                switch (rest[i]) {
+                                case 'n': captured += '\n'; break;
+                                case 't': captured += '\t'; break;
+                                case 'r': captured += '\r'; break;
+                                case '"': captured += '"'; break;
+                                case '\\': captured += '\\'; break;
+                                default:
+                                    return std::unexpected(parse_error_at(
+                                        path, line_number,
+                                        std::string("unsupported escape \\")
+                                            + rest[i]));
+                                }
+                                continue;
+                            }
+                            captured += c;
+                        }
+                    }
+                    const std::string_view tail =
+                        trim(rest.substr(term_pos + 3));
+                    if (const auto err = remainder_error(tail, line_number);
+                        err) {
+                        return std::unexpected(*err);
+                    }
+                    capture = Capture::None;
+                    if (const auto err = dispatch_string(capture_key, captured,
+                                                         line_number);
+                        err) {
+                        return std::unexpected(*err);
+                    }
+                    continue;
+                }
+                // Content starts here (rest may be empty — the newline
+                // immediately following the opening delimiter is trimmed,
+                // which falls out of the continuation loop naturally).
+                captured = std::string(rest);
+                continue;
+            }
+        }
 
         const ScanResult scan = scan_line(raw_line);
         if (!scan.error.empty()) {
             return std::unexpected(parse_error_at(path, line_number, std::string(scan.error)));
         }
-        std::string_view line = raw_line;
-        line = line.substr(0, scan.comment_at == std::string_view::npos
-                              ? line.size()
+        std::string_view content = line;
+        content = content.substr(0, scan.comment_at == std::string_view::npos
+                              ? content.size()
                               : scan.comment_at);
-        const std::string_view content = trim(line);
-        if (content.empty()) {
+        const std::string_view trimmed = trim(content);
+        if (trimmed.empty()) {
             continue;
         }
 
-        const size_t eq = content.find('=');
+        const size_t eq = trimmed.find('=');
         if (eq == std::string_view::npos) {
             return std::unexpected(
                 parse_error_at(path, line_number,
                                "expected `key = value` (missing '=')"));
         }
-        const std::string_view key = trim(content.substr(0, eq));
-        const std::string_view value = trim(content.substr(eq + 1));
+        const std::string_view key = trim(trimmed.substr(0, eq));
+        const std::string_view value = trim(trimmed.substr(eq + 1));
         if (!is_valid_key(key)) {
             return std::unexpected(
                 parse_error_at(path, line_number, "invalid key (use [a-z A-Z 0-9 _ -])"));
@@ -372,6 +612,14 @@ std::expected<Config, ConfigError> parse_config(
             warnings->push_back("config '" + path + "': ignoring unknown key \""
                                 + std::string(key) + "\"");
         }
+    }
+
+    if (capture != Capture::None) {
+        return std::unexpected(parse_error_at(
+            path, capture_start_line,
+            "unterminated multi-line string (no closing " + capture_key + " "
+                + std::string(capture == Capture::Literal ? "'''" : "\"\"\"")
+                + ")"));
     }
 
     // Contract §3: values carry explicit constraints.

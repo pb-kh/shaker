@@ -168,6 +168,102 @@ TEST_CASE("US3: every error detail names the resolved path verbatim")
                                     + "': key \"duration\" ") != std::string::npos);
 }
 
+TEST_CASE("multi-line literal string carries a full shell script verbatim")
+{
+    // Full sh support (otter-launcher-style exec via /bin/sh -c): natural
+    // shell text, including double quotes, subshells, pipes and '#'.
+    const auto parse = shaker::parse_config("/tmp/x.toml", R"toml(
+sensitivity = 40.0
+duration = 0.25
+cooldown = 2.0
+command = '''
+grim -g "$(slurp)" "$HOME/Pictures/shake-$(date +%s).png"
+notify-send "saved #$(date +%s)"
+'''
+)toml", nullptr);
+    REQUIRE(parse.has_value());
+    CHECK(parse->command
+          == "grim -g \"$(slurp)\" \"$HOME/Pictures/shake-$(date +%s).png\"\n"
+             "notify-send \"saved #$(date +%s)\"\n");
+}
+
+TEST_CASE("multi-line literal: single-line form with terminator on the opening line")
+{
+    const auto parse = shaker::parse_config(
+        "/tmp/x.toml", "command = '''echo one-liner'''\n", nullptr);
+    REQUIRE(parse.has_value());
+    CHECK(parse->command == "echo one-liner");
+}
+
+TEST_CASE("multi-line basic string processes escapes and trims the first newline")
+{
+    // TOML basic-string semantics: \n/\t are escapes; a backslash at EOL
+    // trims all whitespace up to the next content (strict TOML
+    // continuation). For shell scripts prefer ''' (verbatim) — see the
+    // literal-string test above.
+    const auto parse = shaker::parse_config("/tmp/x.toml", R"toml(
+command = """
+echo one\
+     two
+printf '%s\n' "tab\there"
+"""
+)toml", nullptr);
+    REQUIRE(parse.has_value());
+    // "one" and "two" fold onto one line with the whitespace between them
+    // trimmed (strict TOML); \n inside the string is a real newline and
+    // \t a real tab.
+    CHECK(parse->command
+          == "echo onetwo\nprintf '%s\n' \"tab\there\"\n");
+}
+
+TEST_CASE("multi-line: unterminated string reports the opening line")
+{
+    auto parse = shaker::parse_config("/tmp/x.toml", "command = '''echo hi\n", nullptr);
+    REQUIRE(!parse.has_value());
+    CHECK(parse.error().detail.find("unterminated multi-line string") != std::string::npos);
+    CHECK(parse.error().detail.find("line 1") != std::string::npos);
+}
+
+TEST_CASE("multi-line: trailing content after the terminator is an error")
+{
+    auto parse = shaker::parse_config(
+        "/tmp/x.toml", "command = '''echo hi''' extra\n", nullptr);
+    REQUIRE(!parse.has_value());
+    CHECK(parse.error().detail.find("trailing content") != std::string::npos);
+}
+
+TEST_CASE("multi-line string on a numeric key is a wrong-type error")
+{
+    auto parse = shaker::parse_config("/tmp/x.toml", "duration = '''3'''\n", nullptr);
+    REQUIRE(!parse.has_value());
+    CHECK(parse.error().detail.find("key \"duration\" has wrong type: expected number")
+          != std::string::npos);
+}
+
+TEST_CASE("grim regression: single-line TOML literal with double-quoted subshell")
+{
+    // The exact fix for the reported broken command: $(slurp) must be
+    // double-quoted AT THE SHELL LEVEL; the TOML literal string (single
+    // quotes) passes the double quotes through untouched.
+    const auto parse = shaker::parse_config(
+        "/tmp/x.toml",
+        "command = 'grim -g \"$(slurp)\" \"$HOME/Pictures/shake-$(date +%s).png\"'\n",
+        nullptr);
+    REQUIRE(parse.has_value());
+    CHECK(parse->command
+          == "grim -g \"$(slurp)\" \"$HOME/Pictures/shake-$(date +%s).png\"");
+}
+
+TEST_CASE("CRLF line endings parse cleanly")
+{
+    const auto parse = shaker::parse_config("/tmp/x.toml",
+                                            "sensitivity = 5\r\ncommand = \"true\"\r\n",
+                                            nullptr);
+    REQUIRE(parse.has_value());
+    CHECK(parse->sensitivity == doctest::Approx(5.0));
+    CHECK(parse->command == "true");
+}
+
 TEST_CASE("US3: unsupported TOML constructs fail with parse errors")
 {
     // A table (documented parser scope: flat key = value only).
