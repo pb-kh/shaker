@@ -38,7 +38,7 @@ Human-readable one-line events, flushed immediately:
 | start | `shaker <version>: watching seat0 — pid <pid>` |
 | device added | `[+] device added: <name> (<sysname>)` |
 | device removed | `[-] device removed: <name>` |
-| shake triggered | `shake! speed=<speed> units/s (peak <peak>) → running: <command>` |
+| shake triggered | `shake! speed=<speed> units/s → running: <command>` (speed = instantaneous swing speed at the triggering sample) |
 
 ### 2.2 stderr — diagnostics (errors + `--debug` trace)
 
@@ -54,7 +54,7 @@ errors).
 | event-timestamp regression (non-fatal) | `shaker: non-monotonic timestamps from device; sample dropped` |
 | command spawn failure (non-fatal) | `shaker: spawn failed: <errno reason>` |
 | child exec failure inside spawned shell | inherited appearance on the daemon's stderr: `sh: <command>: not found` (exit 127 path; status not tracked) |
-| --debug per-sample trace (non-fatal, verbose) | `debug: t=+<elapsed>s speed=<speed> state=<IDLE\|SUSTAIN\|COOLDOWN>` (+ `window=+<elapsed>s` while SUSTAIN) |
+| --debug per-sample trace (non-fatal, verbose) | `debug: t=+<elapsed>s speed=<speed> swings=<n> state=<IDLE\|SUSTAIN\|COOLDOWN>` (+ `window=+<elapsed>s` while SUSTAIN) |
 | --debug trigger trace | `debug: TRIGGER at t=+<elapsed>s peak=<peak>` |
 
 `--debug` never changes *decisions* — only adds visibility (otherwise a

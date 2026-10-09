@@ -49,7 +49,7 @@ Flat TOML document with four recognized top-level scalar keys:
 
 | Key | TOML type | Unit | Default (when omitted) | Constraint |
 |-----|-----------|------|------------------------|------------|
-| `sensitivity` | float (int accepted) | device units per second | `8000.0` | > 0.0 |
+| `sensitivity` | float (int accepted) | pointer units per swing leg | `40.0` | > 0.0 |
 | `duration`    | float (int accepted) | seconds | `0.25` | > 0.0 |
 | `cooldown`    | float (int accepted) | seconds | `2.0` | ≥ 0.0 |
 | `command`     | string  | shell command | **none — required** | non-empty after parse; executed via `/bin/sh -c` |
@@ -68,10 +68,11 @@ Flat TOML document with four recognized top-level scalar keys:
 ### Complete example
 
 ```toml
-# How fast movement must be, in device units per second, to count toward a shake.
-sensitivity = 8000.0
+# How far each swing leg must travel, in pointer units, to count as a
+# direction change.
+sensitivity = 40.0
 
-# How long (seconds) movement must stay above sensitivity to be a shake.
+# How long (seconds) the swing sequence may take to complete a shake.
 duration = 0.25
 
 # How long (seconds) to ignore further shakes after one triggers.
@@ -119,16 +120,18 @@ configuration (FR-010 path).
 
 ## 4. Semantics of each key (contract meaning)
 
-- **sensitivity**: minimum motion *speed* (device units per second) that
-  counts toward a shake. Raise it to require harder shaking; lower it to
-  catch milder shakes. Absolute expected value is device-dependent — use the
-  `--debug` trace to calibrate (see quickstart).
-- **duration**: minimum elapsed time a continuous stretch of above-threshold
-  motion must last before it resolves into a shake. Raise it if bumps/taps
-  must not trigger; raise it to require sustained vigorous shaking.
-- **cooldown**: after a shake triggers, further qualifying motions are
-  ignored for this many seconds. `0.0` disables suppression. It applies in
-  device event time.
+- **sensitivity**: minimum displacement of each swing leg (pointer units)
+  that counts as a direction change. A shake = 3 swings (internal constant)
+  inside the duration window, so this gates *how far the device must move
+  back and forth* — raise it for bigger, more deliberate shakes; lower it
+  if gentle shakes are missed. Ordinary cursor wandering rarely reverses
+  direction 3× inside the window, so it stays quiet.
+- **duration**: how much time the swing sequence may take (from the first
+  swing) to complete before the run is abandoned. Raise for slower,
+  lazier shaking sessions; keep short for snappy response.
+- **cooldown**: after a shake triggers, further shakes are ignored for
+  this many seconds. `0.0` disables suppression. It applies in device
+  event time.
 - **command**: executed by `/bin/sh -c` with cwd and environment inherited
   from the daemon, every time a shake triggers — at most once per cooldown
   window. A failing command does not stop the daemon (exit status of the

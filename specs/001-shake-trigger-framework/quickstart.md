@@ -28,8 +28,8 @@ explicit control:
 ```sh
 mkdir -p ~/.config/shaker
 cat > ~/.config/shaker/config.toml <<'EOF'
-sensitivity = 8000.0   # units/s — expect to tune this
-duration    = 0.25     # seconds of sustained fast motion
+sensitivity = 40.0     # pointer units per swing leg — expect to tune this
+duration    = 0.25     # seconds the swing sequence may take
 cooldown    = 2.0      # seconds between allowed triggers
 command     = "notify-send 'Shake detected'"
 EOF
@@ -42,18 +42,19 @@ the three numbers have defaults and must satisfy
 ## 3. Run (and calibrate)
 
 ```sh
-sudo ./build/shaker --debug
+./build/shaker --debug
 ```
 
 - Start line on stdout; calibration trace on stderr
-  (`debug: t=+…s speed=… state=…`).
-- **Calibration ritual**: shake the device while watching the trace
-  (1) normal idle baseline — speed way below `sensitivity`,
-  (2) ordinary fast mouse/trackpad use — note the speed under
-  `sensitivity` needed for no false triggers,
-  (3) actual shake — speeds cross above `sensitivity`; set sensitivity
-  between (2) and (3); set `duration` above the “crossing time” from
-  (3) but short enough to feel responsive.
+  (`debug: t=+…s speed=… swings=… state=…`).
+- **Calibration ritual**: while watching the trace —
+  (1) idle baseline: `swings=0`, state IDLE;
+  (2) ordinary pointer use: direction changes are rare — `swings` stays
+      below 3 per window → no trigger;
+  (3) actual shake: `swings` reaches 3 inside the window → trigger.
+      Raise `sensitivity` if ordinary wiggles ever complete a window;
+      lower it if your shakes are missed; raise `duration` for slow,
+      lazy shaking styles.
 - Membership in the `input` group avoids sudo (`sudo gpasswd -a $USER input`),
   which is the friction-free way to run it in a user service (below).
 
@@ -91,7 +92,8 @@ systemctl --user enable --now shaker
 | US1-3 failing command | `command = "false"` in config; shake twice | two `spawned` runs (one per window); daemon never exits |
 | US2-1 sensitivity tuning | halve sensitivity; milder shake | now triggers (wasn't) |
 | US2-2 cooldown | cooldown = 5.0; shake at +1s, +5.1s, +6s | only +5.1s+ triggers (continuous shakes suppressed — G-3) |
-| US2-3 duration | shake fast but shorter than duration | no trigger (G-2) |
+| US2-3 duration | swings taking longer than `duration` to complete a window | no trigger (G-2) |
+| US2-4 straight drag | fast one-way cursor movement (no reversals) | no trigger (G-6) |
 | US3-1 missing file | `rm` the config file (`config.toml.bak` backup kept) | file auto-created with defaults + info stderr note; daemon runs; nothing is overwritten if user config exists. Unwritable location → `cannot write default config` + exit 1 |
 | US3-2 broken config | `duration = -1` | stderr: `key "duration" must be > 0`; exit 1 |
 | US3-3 partial config | remove numbers, keep command | starts; defaults shown in `--help`/docs; trigger works (SC-003) |

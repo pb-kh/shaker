@@ -49,10 +49,11 @@ exist, shaker **creates it with defaults** (creating missing directories)
 and runs — edit the generated `command` and restart to set the action.
 
 ```toml
-# How fast movement must be, in device units per second, to count toward a shake.
-sensitivity = 8000.0
+# How far each swing leg must travel, in pointer units, to count as a
+# direction change.
+sensitivity = 40.0
 
-# How long (seconds) movement above `sensitivity` must last to be a shake.
+# How long (seconds) the swing sequence may take to complete a shake.
 duration = 0.25
 
 # How long (seconds) to ignore shakes after one triggers.
@@ -61,6 +62,10 @@ cooldown = 2.0
 # Executed through /bin/sh -c when a shake triggers (required key).
 command = "notify-send 'Shake detected'"
 ```
+
+A shake is recognized as **3 direction changes within the `duration`
+window** (each swing leg traveling at least `sensitivity` pointer units) —
+the physical back-and-forth motion, which keeps ordinary pointer use quiet.
 
 - `sensitivity`, `duration` and `cooldown` fall back to these defaults when
   omitted; `command` is the only **required** key.
@@ -71,11 +76,12 @@ command = "notify-send 'Shake detected'"
 Calibrate your values with
 
 ```sh
-sudo ./build/shaker --debug
+./build/shaker --debug
 ```
 
-which prints a per-sample trace (speed + detection state) on stderr. See
-`specs/001-shake-trigger-framework/quickstart.md` for the full walk-through.
+which prints a per-sample trace (speed, swing count + detection state) on
+stderr. See `specs/001-shake-trigger-framework/quickstart.md` for the full
+walk-through.
 
 ## Background operation
 

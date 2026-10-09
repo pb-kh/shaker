@@ -7,19 +7,22 @@
 ## Summary
 
 shaker watches device motion on the seat via libinput's udev backend and
-executes a user-configured command when the device is shaken: a sustained
-stretch of motion above a configured sensitivity that lasts at least the
-configured duration, with a cooldown suppressing immediate repeats. The daemon
-is a resident, foreground, text-out process configured entirely from a single
-TOML file at `XDG_CONFIG_HOME/shaker/config.toml` (four settings: sensitivity,
-duration, cooldown, command; the three tunables have defaults, the command
-does not). Detection is implemented as a pure, hardware-agnostic core
-consuming (timestamp, dx, dy) samples so it is unit-testable without devices;
-the existing placeholder `src/main.cpp` event stream is replaced by the
-detection pipeline. Command execution is detached (`/bin/sh -c`) so a slow or
-hanging command cannot stall detection. New build-time-only dependencies
-(toml++ for the config contract, doctest for unit tests) are vendored through
-Meson subprojects; the runtime dependency surface stays libinput + libudev.
+executes a user-configured command when the device is shaken: a
+*direction-reversal oscillation* — 3 swing legs (direction changes of at
+least the configured sensitivity, in pointer units each) that complete
+inside the configured duration window, with a cooldown suppressing
+immediate repeats. The daemon is a resident, foreground, text-out process
+configured entirely from a single TOML file at
+`XDG_CONFIG_HOME/shaker/config.toml` (four settings: sensitivity,
+duration, cooldown, command; auto-created with defaults when missing;
+`command` has no safe default in existing files). Detection is implemented
+as a pure, hardware-agnostic core consuming (timestamp, dx, dy) samples so
+it is unit-testable without devices; the existing placeholder `src/main.cpp`
+event stream is replaced by the detection pipeline. Command execution is
+detached (`/bin/sh -c`) so a slow or hanging command cannot stall
+detection. The only build-time-only dependency is doctest (unit tests)
+vendored through a Meson subproject; the runtime dependency surface stays
+libinput + libudev.
 
 ## Technical Context
 

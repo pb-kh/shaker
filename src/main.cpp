@@ -189,8 +189,9 @@ void handle_device_event(Pipeline& pipeline, libinput_event* ev)
             }
             const double elapsed =
                 static_cast<double>(t_usec - pipeline.reference_t_usec) / 1e6;
-            std::fprintf(stderr, "debug: t=+%.3fs speed=%.0f state=%s\n", elapsed,
-                         pipeline.core.ema_speed(),
+            std::fprintf(stderr, "debug: t=+%.3fs speed=%.0f swings=%d state=%s\n",
+                         elapsed, pipeline.core.last_speed(),
+                         pipeline.core.swings(),
                          shaker::state_name(pipeline.core.state()).data());
             if (pipeline.core.state() == shaker::DetectionState::Sustaining) {
                 std::fprintf(stderr, "debug: window=+%.3fs\n",
@@ -206,8 +207,8 @@ void handle_device_event(Pipeline& pipeline, libinput_event* ev)
                                  / 1e6,
                              result.peak_speed);
             }
-            std::printf("shake! speed=%.0f units/s (peak %.0f) → running: %s\n",
-                        pipeline.core.ema_speed(), result.peak_speed,
+            std::printf("shake! speed=%.0f units/s → running: %s\n",
+                        result.peak_speed,
                         pipeline.command.c_str());
             std::fflush(stdout);
             shaker::spawn_detached_shell_command(pipeline.command);

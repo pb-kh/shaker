@@ -166,17 +166,38 @@ shakes catch; shorten duration → snappier triggers).
 **Interleaving note (accepted limitation)**: all pointer devices feed one
 shared core in event order.
 
-**Refinement (implementation-discovered)**: with raw inter-sample speed, a
-shake's direction *reversals* produce near-zero-speed segments (velocity
-passes through ~0 at every flip), which would shatter any sustained window
-and make real oscillating shakes undetectable. The core therefore feeds a
-**fixed internal EMA** (τ = 20 ms, not a config key — the 4-key contract is
-unchanged) of instantaneous speed into the state machine instead of raw
-segment speed. Effects: reversal dips are bridged (real shakes sustain), a
-single bump decays below the threshold in ~5·τ ≈ 100 ms and still cannot
-cross a typical `duration`, and tuning directions per configurable key are
-unchanged. Config semantics, transitions, and units otherwise hold exactly
-as above. Simultaneously moving two devices can distort
+**Refinement (v2, user-validated)**: v1's sustained-speed window failed on
+real hardware — a reported Surface trace ("shaking as hard as I want")
+peaked at ~3,400 units/s while the direction reversals pulled the smoothed
+speed down to ~600–1,000 between swings; *any* threshold consistent with
+"ordinary use never triggers" either breaks the window at every reversal
+or fires on ordinary pointer use. Velocity magnitude fundamentally cannot
+discriminate a shake from regular use: reversals can. v2 therefore
+redefines the detector as **direction-reversal counting with hysteresis**:
+
+- the core accumulates displacement per axis and counts a *swing* whenever
+  the axis position moves back by at least `sensitivity` units from its
+  phase extreme (per-axis hysteresis, so flips that converge without real
+  displacement are ignored);
+- a **shake = ≥ 3 swings (internal constant) within `duration` seconds**
+  (window anchored to the first counted swing, event-time only);
+- straight, sustained or wandering motion produces 1–2 swings per window
+  at most → stays silent; oscillating shaking produces ≥ 3 → triggers;
+- `sensitivity` is now **pointer units per swing leg** (units changed!) —
+  default 40.0; `duration` and `cooldown` keep their seconds semantics;
+- cooldown/state machine/output contracts, idle/gap resets, and the pure,
+  replayable character of the core are unchanged.
+
+**Alternatives considered (v2)**:
+- *Lower the speed threshold (sensitivity ~1,000 units/s)*: your reversal
+  troughs (~600–900) would stay above it only barely; any real pointer
+  usage then blows past the window constantly. Rejected (false triggers
+  during normal use).
+- *Peak-counting of the smoothed speed*: depends on dip ratio (~25% here)
+  which varies per device; still speed-based. Rejected.
+- *Reversal counting with per-axis hysteresis* (chosen): matches the
+  physical definition of a shake, robust to drift (extremes re-anchor per
+  leg), simplest fixed-size implementation. Simultaneously moving two devices can distort
 inter-event dt and thus speed for flapping windows; single-user single-seat
 reality makes this negligible in v1. Per-device cores rejected: require a
 device→state map and device identity in the pure sample type for a case the

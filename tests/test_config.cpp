@@ -60,7 +60,7 @@ TEST_CASE("US3-3 / SC-003: omitted numeric keys fall back to documented defaults
     const auto parse = shaker::parse_config("/tmp/x.toml",
                                             std::string(kMinimalConfig), nullptr);
     REQUIRE(parse.has_value());
-    CHECK(parse->sensitivity == doctest::Approx(8000.0));
+    CHECK(parse->sensitivity == doctest::Approx(40.0));
     CHECK(parse->duration_sec == doctest::Approx(0.25));
     CHECK(parse->cooldown_sec == doctest::Approx(2.0));
     CHECK(parse->command == "echo hi");
@@ -219,7 +219,7 @@ TEST_CASE("US3: load path — unknown key warning is non-fatal, defaults apply")
     std::vector<std::string> warnings;
     auto loaded = shaker::load_config(&warnings);
     REQUIRE(loaded.has_value());
-    CHECK(loaded->sensitivity == doctest::Approx(8000.0)); // default (FR-012)
+    CHECK(loaded->sensitivity == doctest::Approx(40.0)); // default (FR-012)
     CHECK(warnings.size() == 1);
     CHECK(warnings[0].find("ignoring unknown key \"duracion\"") != std::string::npos);
     CHECK(warnings[0].find("/tmp/opencode/cfg/warnings/shaker/config.toml")
@@ -236,7 +236,7 @@ TEST_CASE("US3: a missing config file is auto-initialized with defaults")
     auto loaded = shaker::load_config(&warnings);
     REQUIRE(loaded.has_value());
     CHECK(std::filesystem::exists("/tmp/opencode/cfg/autocreate/fresh/shaker/config.toml"));
-    CHECK(loaded->sensitivity == doctest::Approx(8000.0));
+    CHECK(loaded->sensitivity == doctest::Approx(40.0));
     CHECK(loaded->duration_sec == doctest::Approx(0.25));
     CHECK(loaded->cooldown_sec == doctest::Approx(2.0));
     CHECK(loaded->command == "notify-send 'Shake detected'");

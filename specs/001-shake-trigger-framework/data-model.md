@@ -22,9 +22,11 @@ conversion from libinput to this plain type.
 | `t_usec` | `int64` micro-seconds, CLOCK_MONOTONIC, strictly non-decreasing across samples | Event timestamp (device event time, not wall clock) | must not go backwards; violates → sample dropped + stderr diagnostic |
 | `dx` | `double` libinput pointer delta units | Horizontal motion delta since previous motion event from the same device (as reported) | none (any real number) |
 | `dy` | `double` libinput pointer delta units | Vertical motion delta | none |
-| `speed` | `double` derived, device units / second | speed estimate fed to the state machine: instantaneous `hypot(dx, dy) / dt` smoothed by a fixed internal EMA (τ = 20 ms, research R-04 refinement) so direction-reversal dips don't shatter the sustained window; `dt` = δt between this and previous sample, guarded to ≥ 1 µs | derived, never persisted |
 
-Relationships: consumed by `DetectionCore::feed()`.
+The core derives everything else: it integrates displacement per axis and
+counts direction changes (swings) on each axis with hysteresis; the
+instantaneous swing speed (units/s) at the triggering sample is reported in
+the result for diagnostics.
 
 ## 2. DetectionParams
 
@@ -34,7 +36,7 @@ the "parameterizable" part required by constitution V.
 
 | Field | Type | Source key | Unit | Default | Valid range | Invalid handling |
 |-------|------|-----------|------|---------|-------------|------------------|
-| `sensitivity` | `double` | `sensitivity` | device units / second | `8000.0` (calibration starting point, documented) | > 0.0 | error + exit (FR-010) |
+| `sensitivity` | `double` | `sensitivity` | pointer units per swing leg | `40.0` | > 0.0 | error + exit (FR-010) |
 | `duration_usec` | `int64` | `duration` | seconds (config) | 0.25 s | > 0.0 | error + exit (FR-010) |
 | `cooldown_usec` | `int64` | `cooldown` | seconds (config) | 2.0 s | ≥ 0.0 (0 = no suppression) | error + exit (FR-010) |
 
@@ -43,42 +45,57 @@ Relationships: ctor parameter of `DetectionCore`; immutable for process life
 
 ## 3. DetectionCore (state machine)
 
-The pure detection transformer. Owns all shake-decision state; contains **no**
-I/O.
+The pure detection transformer (v2, research R-04): swings = direction
+changes with real displacement. Owns all shake-decision state; contains
+**no** I/O.
 
 | Field | Type | Meaning |
 |-------|------|---------|
 | `params` | `DetectionParams` | immutable |
 | `state` | enum `Idle`, `Sustaining`, `Cooldown` | current machine phase |
-| `window_start_usec` | `int64` | timestamp at which the current above-threshold stretch began (valid in Sustaining) |
+| `position[2]` | `double` per axis | running displacement along X and Y (integrates dx/dy) |
+| `extreme[2]`, `phase[2]` | per axis | hysteresis run: current extreme of position and its phase (+rising/−falling/none) |
+| `swings` | `int` | counted direction changes inside the open window |
+| `first_flip_t_usec`, `window_open` | window anchor | when the current swing run began (event time) |
 | `cooldown_until_usec` | `int64` | end of current cooldown (valid in Cooldown) |
 
-State transitions (straight-line translation of FR-007, FR-008, FR-009):
+Behavior (per sample; both axes run independently, either counts):
 
 ```text
-                sample s (speed, t)
+                sample s (dx, dy, t)
                 ───────────────────►
-Idle          : speed ≥ sensitivity        → Sustaining{window_start = s.t}
-Idle          : otherwise                  → Idle
-Sustaining    : speed < sensitivity        → Idle          (window broken)
-Sustaining    : (s.t − window_start) ≥ duration
-                                           → emit Trigger{at = s.t}
-                                             Cooldown{until = s.t + cooldown}
-Sustaining    : otherwise                  → Sustaining
-Cooldown      : s.t ≥ until                → Idle  (evaluate next sample normally)
-Cooldown      : s.t < until                → Cooldown   (FR-008: never retrigger)
+Position      : position[axis] += d[axis]
+Phase none    : |position| ≥ sensitivity → open phase (+rising if position > 0, else −falling),
+                                       extreme = position
+Rising        : position > extreme       → extreme = position   (still moving out)
+              : extreme − position ≥ sensitivity
+                                         → swing++ (flip to rising↔falling; extreme = position)
+Falling       : symmetric
+
+Window        : opens at the first counted swing (first_flip = t)
+SUSTAIN       : any swing keeps the machine in Sustaining while the window is open
+              : (t − first_flip) > duration    → window abandoned (state → Idle, hunt restarted)
+TRIGGER       : swings ≥ 3 (internal constant) within the window
+                                           → emit Trigger{at = t, speed = instant swing speed}
+                                             Cooldown{until = t + cooldown}, full reset
+Long idle gap (> 0.5 s) → full reset
+COOLDOWN      : t < until → silent (never retrigger, FR-008)
+              : t ≥ until → Idle + full reset (evaluate fresh from next sample)
 ```
+
+State summary: `Idle` = no open window; `Sustaining` = open swing window;
+`Cooldown` = suppressing window.
 
 Guarantees (each maps to a test requirement):
 - G-1: never emits two Triggers closer than `cooldown` apart (FR-008/FR-009,
   SC-006).
-- G-2: bypass-free — a stretch shorter than `duration` cannot emit (US2
-  scenario 3).
-- G-3: samples at any speed during Cooldown never emit until it elapses
+- G-2: swings that cannot complete inside `duration` never emit (US2-3).
+- G-3: samples at any motion during Cooldown never emit until it elapses
   (continuous-shaking edge case: no queued/executing storms).
 - G-4: state has fixed size; no allocation per sample (SC-005).
 - G-5: behavior depends only on (params, sample history) — deterministic,
   replayable.
+- G-6: motion without direction changes (straight fast drags) never emits.
 
 ## 4. DetectionResult
 
@@ -86,9 +103,9 @@ The core's output event.
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `triggered` | `bool` | true exactly when G-1..G-3 allowed an emission on this sample |
+| `triggered` | `bool` | true exactly when G-1..G-6 allowed an emission on this sample |
 | `at_usec` | `int64` | event timestamp of the triggering sample (used for trigger logging) |
-| `peak_speed` | `double` | max speed observed inside the closing window (calibration diagnostics only) |
+| `peak_speed` | `double` | instantaneous swing speed (units/s) at the triggering sample (diagnostics) |
 
 Relationships: emitted by the core; the host layer prints the stdout trigger
 line (when `triggered`) and then spawns the command.

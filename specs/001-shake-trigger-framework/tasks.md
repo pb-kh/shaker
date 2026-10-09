@@ -139,7 +139,17 @@ failures can no longer produce confusing jobs at runtime.
 - [x] T015 [P] Update README.md: replace the placeholder print-events description with the daemon usage (config location incl. `XDG_CONFIG_HOME/shaker/config.toml`, four keys table, build/test/run commands, input-group prerequisite, quickstart reference) — the deferred TODO recorded in the constitution's `SYNC IMPACT REPORT` deferred TODO
 - [x] T016 [P] Zero-warning gate sweep across all targets including subprojects (constitution III): fix any project-source warnings directly (no `-Wno-`/`#pragma` suppression anywhere); if a third-party header warns, handle subproject-side (e.g. wrap `override_options`: documented in plan.md Complexity Tracking) and record the outcome
 - [x] T017 Execute quickstart.md end-to-end as the final validation (SC-001…SC-007 table) — meson test green, acceptance-row walk-through recorded in the PR/commit message, constitution commit discipline (small atomic commits per task, constitution gate 4)
-- [x] T018 [US3] Auto-initialize a missing config file: write the documented default template (contract §2 example values incl. example `command`) after creating parent directories in `src/config.cpp` (`create_default_config` + ENOENT path in `load_config`), print the informational stderr note, fail with `cannot write default config '<path>': …` when creation is impossible; update spec US3-1/FR-011, contract §1/§3, research R-03 addendum, tests (created + create-failure), README and quickstart rows
+- [x] T018 [US3] Auto-initialize a missing config file
+- [x] T019 [US1] Detection semantics v2 (user-validated): replace the
+  sustained-speed window with direction-reversal counting (research R-04
+  v2) — per-axis hysteresis over accumulated displacement (`sensitivity`
+  = pointer units per swing leg, default 40.0), shake = 3 swings within
+  `duration`; cooldown machinery unchanged; update core
+  (`include/shaker/detection.hpp`, `src/detection.cpp`), full test suite
+  incl. the user-reported Surface trace regression, config template +
+  default in `include/shaker/config.hpp` + `src/config.cpp`, docs
+  (contract §2/§4, data-model §1–§4, README, quickstart, plan summary)
+  and the `--debug` trace fields (swings) in `src/main.cpp`
 
 ---
 

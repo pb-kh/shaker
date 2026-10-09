@@ -19,8 +19,8 @@
 namespace shaker {
 
 struct Config {
-    // Documented defaults (contracts/config-schema.md §2).
-    double sensitivity = 8000.0;        // device units / second
+    // Documented defaults (contracts/config-schema.md §2, v2 semantics).
+    double sensitivity = 40.0;          // pointer units per swing leg
     double duration_sec = 0.25;
     double cooldown_sec = 2.0;
     std::string command;                // no default — required (US3)
