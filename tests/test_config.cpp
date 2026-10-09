@@ -226,11 +226,55 @@ TEST_CASE("US3: load path — unknown key warning is non-fatal, defaults apply")
           != std::string::npos);
 }
 
-TEST_CASE("US3 #1: missing file yields a cannot-read error including path")
+TEST_CASE("US3: a missing config file is auto-initialized with defaults")
 {
-    ::setenv("XDG_CONFIG_HOME", "/tmp/opencode/cfgtest/missing/definitely", 1);
-    auto parse = shaker::load_config();
-    REQUIRE(!parse.has_value());
-    CHECK(parse.error().detail.find("cannot read") != std::string::npos);
-    CHECK(parse.error().detail.find("shaker/config.toml") != std::string::npos);
+    // Fresh location: the file (and parent dirs) must be created.
+    ::setenv("XDG_CONFIG_HOME", "/tmp/opencode/cfg/autocreate/fresh", 1);
+    std::vector<std::string> warnings;
+    auto loaded = shaker::load_config(&warnings);
+    REQUIRE(loaded.has_value());
+    CHECK(std::filesystem::exists("/tmp/opencode/cfg/autocreate/fresh/shaker/config.toml"));
+    CHECK(loaded->sensitivity == doctest::Approx(8000.0));
+    CHECK(loaded->duration_sec == doctest::Approx(0.25));
+    CHECK(loaded->cooldown_sec == doctest::Approx(2.0));
+    CHECK(loaded->command == "notify-send 'Shake detected'");
+    REQUIRE(!warnings.empty());
+    CHECK(warnings[0].find("created default config") != std::string::npos);
+
+    // Re-running does not warn again and never overwrites.
+    std::vector<std::string> second_run_warnings;
+    auto again = shaker::load_config(&second_run_warnings);
+    REQUIRE(again.has_value());
+    CHECK(again->command == "notify-send 'Shake detected'");
+    CHECK(second_run_warnings.empty());
+}
+
+TEST_CASE("US3: an unwritable location fails with 'cannot write default config'")
+{
+    // /proc never accepts new directories for an unprivileged process.
+    ::setenv("XDG_CONFIG_HOME", "/proc/shaker-cannot-create", 1);
+    auto failed = shaker::load_config(nullptr);
+    REQUIRE(!failed.has_value());
+    CHECK(failed.error().detail.find("cannot write default config")
+          != std::string::npos);
+    CHECK(failed.error().detail.find("/proc/shaker-cannot-create/shaker/config.toml")
+          != std::string::npos);
+}
+
+TEST_CASE("US3 #1: an existing unreadable file still errors with cannot read")
+{
+    // Create a target parent we cannot enter, so the config path itself is
+    // unreadable (and NOT missing — auto-init must not kick in).
+    ::setenv("XDG_CONFIG_HOME", "/tmp/opencode/cfg/readfail", 1);
+    std::filesystem::create_directories("/tmp/opencode/cfg/readfail/shaker");
+    std::ofstream base("/tmp/opencode/cfg/readfail/shaker/config.toml");
+    base << "command = \"true\"\n";
+    base.close();
+    std::filesystem::permissions("/tmp/opencode/cfg/readfail/shaker",
+                                 std::filesystem::perms::none);
+    auto failed = shaker::load_config(nullptr);
+    std::filesystem::permissions("/tmp/opencode/cfg/readfail/shaker",
+                                 std::filesystem::perms::owner_all);
+    REQUIRE(!failed.has_value());
+    CHECK(failed.error().detail.find("cannot read") != std::string::npos);
 }

@@ -34,6 +34,43 @@ namespace {
     return text;
 }
 
+// The template written when the config file does not exist (contract §1
+// auto-initialization): the documented example values, commented keys, and
+// an example command the user may edit.
+constexpr std::string_view kDefaultConfigTemplate =
+    "# shaker configuration (auto-generated on first run)\n"
+    "# Shaker detects fast sustained movement of your pointer devices and\n"
+    "# runs `command`. Edit and restart to apply (no hot reload).\n"
+    "\n"
+    "# How fast movement must be, in device units per second, to count\n"
+    "# toward a shake. Raise for stronger shakes only, lower to tune in.\n"
+    "sensitivity = 8000.0\n"
+    "\n"
+    "# How long (seconds) movement must stay above sensitivity to be a shake.\n"
+    "duration = 0.25\n"
+    "\n"
+    "# How long (seconds) to ignore further shakes after one triggers.\n"
+    "cooldown = 2.0\n"
+    "\n"
+    "# Run through /bin/sh -c when a shake triggers (the only required key).\n"
+    "command = \"notify-send 'Shake detected'\"\n";
+
+[[nodiscard]] bool create_default_config(const std::filesystem::path& path)
+{
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    if (ec && !std::filesystem::is_directory(path.parent_path())) {
+        return false;
+    }
+    std::ofstream created(path, std::ios::binary | std::ios::trunc);
+    if (!created.is_open()) {
+        return false;
+    }
+    created << kDefaultConfigTemplate;
+    created.close();
+    return created.good();
+}
+
 // Strip TOML `_` separators between digits (permissive subset).
 [[nodiscard]] std::string strip_underscores(std::string_view number)
 {
@@ -335,10 +372,36 @@ std::expected<Config, ConfigError> load_config(std::vector<std::string>* warning
 
     std::ifstream file(path, std::ios::binary);
     if (!file.is_open()) {
-        return std::unexpected(ConfigError{
-            .detail = "cannot read '" + path_str + "': " + std::strerror(errno),
-            .path = path_str,
-        });
+        if (errno != ENOENT) {
+            // Existing but unreadable (permissions etc.): contract §3 #1.
+            return std::unexpected(ConfigError{
+                .detail = "cannot read '" + path_str + "': " + std::strerror(errno),
+                .path = path_str,
+            });
+        }
+        // Missing file → auto-initialize (contract §1, user-requested
+        // amendment). Never overwrites an existing file; a write failure
+        // is fatal with its own error shape.
+        if (!create_default_config(path)) {
+            return std::unexpected(ConfigError{
+                .detail = "cannot write default config '" + path_str + "': "
+                              + std::strerror(errno),
+                .path = path_str,
+            });
+        }
+        if (warnings != nullptr) {
+            warnings->push_back("created default config '" + path_str
+                                + "'; edit its \"command\" to set the shake "
+                                  "action");
+        }
+        file.open(path, std::ios::binary);
+        if (!file.is_open()) {
+            return std::unexpected(ConfigError{
+                .detail = "cannot read '" + path_str + "': "
+                              + std::strerror(errno),
+                .path = path_str,
+            });
+        }
     }
     std::ostringstream contents;
     contents << file.rdbuf();
