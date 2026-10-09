@@ -229,6 +229,8 @@ TEST_CASE("US3: load path — unknown key warning is non-fatal, defaults apply")
 TEST_CASE("US3: a missing config file is auto-initialized with defaults")
 {
     // Fresh location: the file (and parent dirs) must be created.
+    std::error_code rm_ec;
+    std::filesystem::remove_all("/tmp/opencode/cfg/autocreate", rm_ec);
     ::setenv("XDG_CONFIG_HOME", "/tmp/opencode/cfg/autocreate/fresh", 1);
     std::vector<std::string> warnings;
     auto loaded = shaker::load_config(&warnings);
