@@ -1,0 +1,28 @@
+# Meson / Ninja build directory
+build/
+builddir/
+subprojects/*/
+!subprojects/*.wrap
+
+# C / C++ object artifacts
+*.o
+*.obj
+*.so
+*.a
+*.exe
+*.dll
+
+# Coverage / profiling
+*.gcda
+*.gcno
+*.prof
+*.profraw
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Logs and env
+*.log
+.env*

@@ -21,6 +21,14 @@ libudev_dep = dependency(
   'libudev',
 )
 
+# Build-time only dependency (constitution II: declared via dependency()).
+# doctest is the header-only unit-test framework (R-02); never linked into
+# the runtime binary. The TOML contract needs no dependency (R-01 revised).
+doctest_dep = dependency(
+  'doctest',
+  static: true,
+)
+
 cc = meson.get_compiler('cpp')
 
 # Detect the C++ standard actually used, for a sanity check at build time.
@@ -36,9 +44,24 @@ inc = include_directories('include')
 
 cpp_args = ['-DSHAKER_VERSION="' + meson.project_version() + '"']
 
+# Internal core shared by the runtime binary and the unit tests, so tests
+# exercise the exact translation units that ship in `shaker` (constitution V).
+core_sources = [
+  'src/detection.cpp',
+  'src/config.cpp',
+  'src/exec_command.cpp',
+]
+
+shaker_core = static_library(
+  'shaker_core',
+  core_sources,
+  include_directories: inc,
+)
+
 executable(
   'shaker',
   'src/main.cpp',
+  link_with: shaker_core,
   dependencies: [libinput_dep, libudev_dep],
   include_directories: inc,
   cpp_args: cpp_args,
@@ -52,3 +75,19 @@ summary(
   },
   section: 'Configuration',
 )
+
+# ---- Unit tests (constitution V + test gate) -------------------------------
+
+foreach test_case : [
+  {'name': 'test_detection', 'sources': ['tests/test_detection.cpp']},
+  {'name': 'test_config', 'sources': ['tests/test_config.cpp']},
+]
+  exe = executable(
+    test_case['name'],
+    test_case['sources'],
+    link_with: shaker_core,
+    dependencies: [doctest_dep],
+    include_directories: inc,
+  )
+  test(test_case['name'], exe)
+endforeach
