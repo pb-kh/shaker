@@ -108,6 +108,17 @@ existing file. Template write failures are fatal:
 `create_default_config()` in `src/config.cpp`; first-run behavior covered
 in `tests/test_config.cpp`.
 
+**Addendum 2 (v2 migration)**: files that match the untouched v1
+auto-generated template **verbatim** are migrated once to the current
+template on load (`migrate_v1_default_config()`), with an informational
+stderr note. This matters because the v1 template's
+`sensitivity = 8000.0` was in units/second, which v2 reads as *pointer
+units per swing leg* — an impossible threshold that silently
+swallowed every real shake (user-validated regression). Hand-edited
+files are never rewritten: only an exact template match proves the file
+is an untouched generated file. Covered by two dedicated tests
+(migrates + idempotent second load; hand-edited file untouched).
+
 ## R-04: Shake detection definition and algorithm
 
 **Decision**: A shake is **motion sustained above a speed threshold for at

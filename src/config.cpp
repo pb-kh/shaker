@@ -72,6 +72,43 @@ constexpr std::string_view kDefaultConfigTemplate =
     return created.good();
 }
 
+// The v0/v1 template (auto-generated before the v2 sensitivity rework).
+// Files that match it verbatim are auto-migrated to the current template —
+// explicitly NOT rewriting hand-edited files (an exact match can only be
+// an untouched generated file, never user work).
+constexpr std::string_view kDefaultConfigTemplateV1 =
+    "# shaker configuration (auto-generated on first run)\n"
+    "# Shaker detects fast sustained movement of your pointer devices and\n"
+    "# runs `command`. Edit and restart to apply (no hot reload).\n"
+    "\n"
+    "# How fast movement must be, in device units per second, to count\n"
+    "# toward a shake. Raise for stronger shakes only, lower to tune in.\n"
+    "sensitivity = 8000.0\n"
+    "\n"
+    "# How long (seconds) movement must stay above sensitivity to be a shake.\n"
+    "duration = 0.25\n"
+    "\n"
+    "# How long (seconds) to ignore further shakes after one triggers.\n"
+    "cooldown = 2.0\n"
+    "\n"
+    "# Run through /bin/sh -c when a shake triggers (the only required key).\n"
+    "command = \"notify-send 'Shake detected'\"\n";
+
+[[nodiscard]] bool migrate_v1_default_config(const std::filesystem::path& path,
+                                             const std::string& contents)
+{
+    if (contents != kDefaultConfigTemplateV1) {
+        return false;
+    }
+    std::ofstream rewritten(path, std::ios::binary | std::ios::trunc);
+    if (!rewritten.is_open()) {
+        return false;
+    }
+    rewritten << kDefaultConfigTemplate;
+    rewritten.close();
+    return rewritten.good();
+}
+
 // Strip TOML `_` separators between digits (permissive subset).
 [[nodiscard]] std::string strip_underscores(std::string_view number)
 {
@@ -406,7 +443,26 @@ std::expected<Config, ConfigError> load_config(std::vector<std::string>* warning
     }
     std::ostringstream contents;
     contents << file.rdbuf();
-    return parse_config(path_str, contents.str(), warnings);
+    std::string contents_str = contents.str();
+
+    // An untouched v1-generated template carries a sensitivity value in
+    // v1 units (units/second), which v2 reads as pointer units per swing
+    // leg — an impossible threshold that silently swallowed every real
+    // shake (user-validated regression). Migrate it verbatim; hand-edited
+    // files are never rewritten.
+    if (migrate_v1_default_config(path, contents_str)) {
+        // Parse the migrated content (the disk file and the returned
+        // config must agree).
+        contents_str.assign(kDefaultConfigTemplate);
+        if (warnings != nullptr) {
+            warnings->push_back("migrated v1 default config '" + path_str
+                                + "' to the v2 swing-based sensitivity "
+                                  "(sensitivity = 40.0 pointer units per "
+                                  "swing leg)");
+        }
+    }
+
+    return parse_config(path_str, contents_str, warnings);
 }
 
 DetectionParams to_detection_params(const Config& config)

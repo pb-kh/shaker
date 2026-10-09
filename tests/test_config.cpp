@@ -263,6 +263,80 @@ TEST_CASE("US3: an unwritable location fails with 'cannot write default config'"
           != std::string::npos);
 }
 
+TEST_CASE("US3: a v1-template config is auto-migrated to v2 units")
+{
+    // Install the exact v1-generated template (old units: units/second).
+    std::error_code rm_ec;
+    std::filesystem::remove_all("/tmp/opencode/cfg/migrate", rm_ec);
+    std::filesystem::create_directories("/tmp/opencode/cfg/migrate/shaker");
+    {
+        std::ofstream file("/tmp/opencode/cfg/migrate/shaker/config.toml");
+        file << "# shaker configuration (auto-generated on first run)\n"
+                "# Shaker detects fast sustained movement of your pointer devices and\n"
+                "# runs `command`. Edit and restart to apply (no hot reload).\n"
+                "\n"
+                "# How fast movement must be, in device units per second, to count\n"
+                "# toward a shake. Raise for stronger shakes only, lower to tune in.\n"
+                "sensitivity = 8000.0\n"
+                "\n"
+                "# How long (seconds) movement must stay above sensitivity to be a shake.\n"
+                "duration = 0.25\n"
+                "\n"
+                "# How long (seconds) to ignore further shakes after one triggers.\n"
+                "cooldown = 2.0\n"
+                "\n"
+                "# Run through /bin/sh -c when a shake triggers (the only required key).\n"
+                "command = \"notify-send 'Shake detected'\"\n";
+    }
+    ::setenv("XDG_CONFIG_HOME", "/tmp/opencode/cfg/migrate", 1);
+
+    std::vector<std::string> warnings;
+    auto loaded = shaker::load_config(&warnings);
+    REQUIRE(loaded.has_value());
+    // The migrated template carries the v2 default threshold.
+    CHECK(loaded->sensitivity == doctest::Approx(40.0));
+    bool migrated = false;
+    for (const std::string& warning : warnings) {
+        if (warning.find("migrated v1 default config") != std::string::npos) {
+            migrated = true;
+        }
+    }
+    CHECK(migrated);
+
+    // Second load: the file is now the v2 template, nothing to migrate.
+    std::vector<std::string> second_warnings;
+    auto again = shaker::load_config(&second_warnings);
+    REQUIRE(again.has_value());
+    CHECK(again->sensitivity == doctest::Approx(40.0));
+    for (const std::string& warning : second_warnings) {
+        CHECK(warning.find("migrated") == std::string::npos);
+    }
+}
+
+TEST_CASE("US3: a hand-edited config is never migrated or rewritten")
+{
+    std::error_code rm_ec;
+    std::filesystem::remove_all("/tmp/opencode/cfg/nomigrate", rm_ec);
+    std::filesystem::create_directories("/tmp/opencode/cfg/nomigrate/shaker");
+    const std::string user_config =
+        "# my own tuning\n"
+        "sensitivity = 8000.0\n"
+        "duration = 0.5\n"
+        "command = \"echo mine\"\n";
+    {
+        std::ofstream file("/tmp/opencode/cfg/nomigrate/shaker/config.toml");
+        file << user_config;
+    }
+    ::setenv("XDG_CONFIG_HOME", "/tmp/opencode/cfg/nomigrate", 1);
+
+    std::vector<std::string> warnings;
+    auto loaded = shaker::load_config(&warnings);
+    REQUIRE(loaded.has_value());
+    CHECK(loaded->sensitivity == doctest::Approx(8000.0)); // untouched
+    CHECK(loaded->command == "echo mine");
+    CHECK(warnings.empty());
+}
+
 TEST_CASE("US3 #1: an existing unreadable file still errors with cannot read")
 {
     // Create a target parent we cannot enter, so the config path itself is

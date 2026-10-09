@@ -140,6 +140,13 @@ failures can no longer produce confusing jobs at runtime.
 - [x] T016 [P] Zero-warning gate sweep across all targets including subprojects (constitution III): fix any project-source warnings directly (no `-Wno-`/`#pragma` suppression anywhere); if a third-party header warns, handle subproject-side (e.g. wrap `override_options`: documented in plan.md Complexity Tracking) and record the outcome
 - [x] T017 Execute quickstart.md end-to-end as the final validation (SC-001…SC-007 table) — meson test green, acceptance-row walk-through recorded in the PR/commit message, constitution commit discipline (small atomic commits per task, constitution gate 4)
 - [x] T018 [US3] Auto-initialize a missing config file
+- [x] T020 [US3] v1→v2 config migration: rewrite untouched v1-generated
+  templates (`sensitivity = 8000.0` in units/second — unreachably large
+  under v2's pointer-units-per-swing semantics, which swallowed all real
+  shakes) to the current template on load, with an informational stderr
+  note; hand-edited files are never rewritten (exact-match guard);
+  tests: migrate-idempotent, hand-edited-untouched; research R-03
+  Addendum 2
 - [x] T019 [US1] Detection semantics v2 (user-validated): replace the
   sustained-speed window with direction-reversal counting (research R-04
   v2) — per-axis hysteresis over accumulated displacement (`sensitivity`
