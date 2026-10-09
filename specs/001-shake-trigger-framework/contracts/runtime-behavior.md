@@ -38,7 +38,7 @@ Human-readable one-line events, flushed immediately:
 | start | `shaker <version>: watching seat0 — pid <pid>` |
 | device added | `[+] device added: <name> (<sysname>)` |
 | device removed | `[-] device removed: <name>` |
-| shake triggered | `shake! speed=<speed> units/s → running: <command>` (speed = instantaneous swing speed at the triggering sample) |
+| shake triggered | `shake! speed=<speed> units/s → running: <command>` (speed = instantaneous swing speed; multi-line scripts show their first line + `…`) |
 
 ### 2.2 stderr — diagnostics (errors + `--debug` trace)
 

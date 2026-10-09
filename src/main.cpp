@@ -209,7 +209,17 @@ void handle_device_event(Pipeline& pipeline, libinput_event* ev)
             }
             std::printf("shake! speed=%.0f units/s → running: %s\n",
                         result.peak_speed,
-                        pipeline.command.c_str());
+                        [&] {
+                            const std::string_view cmd = pipeline.command;
+                            const size_t nl = cmd.find('\n');
+                            if (nl == std::string_view::npos) {
+                                return std::string(cmd);
+                            }
+                            // Multi-line scripts: first line only (the rest
+                            // would flood the observation stream).
+                            return std::string(cmd.substr(0, nl)) + " …";
+                        }()
+                            .c_str());
             std::fflush(stdout);
             shaker::spawn_detached_shell_command(pipeline.command);
         }
