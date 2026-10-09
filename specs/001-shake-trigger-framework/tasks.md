@@ -138,7 +138,7 @@ failures can no longer produce confusing jobs at runtime.
 
 - [x] T015 [P] Update README.md: replace the placeholder print-events description with the daemon usage (config location incl. `XDG_CONFIG_HOME/shaker/config.toml`, four keys table, build/test/run commands, input-group prerequisite, quickstart reference) — the deferred TODO recorded in the constitution's `SYNC IMPACT REPORT` deferred TODO
 - [x] T016 [P] Zero-warning gate sweep across all targets including subprojects (constitution III): fix any project-source warnings directly (no `-Wno-`/`#pragma` suppression anywhere); if a third-party header warns, handle subproject-side (e.g. wrap `override_options`: documented in plan.md Complexity Tracking) and record the outcome
-- [ ] T017 Execute quickstart.md end-to-end as the final validation (SC-001…SC-007 table) — meson test green, acceptance-row walk-through recorded in the PR/commit message, constitution commit discipline (small atomic commits per task, constitution gate 4)
+- [x] T017 Execute quickstart.md end-to-end as the final validation (SC-001…SC-007 table) — meson test green, acceptance-row walk-through recorded in the PR/commit message, constitution commit discipline (small atomic commits per task, constitution gate 4)
 
 ---
 
