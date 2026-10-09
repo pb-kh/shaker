@@ -1,7 +1,17 @@
+// shaker — shake-triggered command daemon (US1 wired).
+//
+// Flow (contracts/runtime-behavior.md): CLI → config load (fatal on error,
+// before any device is opened) → libinput/udev on seat0 → pointer-motion
+// samples → pure DetectionCore → on Trigger: one stdout line + detached
+// command spawn (never waited, auto-reaped). SIGINT/SIGTERM exit 0 via a
+// signalfd; the loop blocks in poll(2) (idle ≈ 0% CPU).
 #include <libinput.h>
 #include <libudev.h>
 
 #include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <sys/signalfd.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -9,7 +19,14 @@
 #include <cstring>
 #include <string_view>
 
+#include <shaker/config.hpp>
+#include <shaker/detection.hpp>
+#include <shaker/exec_command.hpp>
+#include <shaker/fd.hpp>
 #include <shaker/version.hpp>
+
+#include <string>
+#include <vector>
 
 namespace {
 
@@ -35,7 +52,8 @@ constexpr libinput_interface device_interface = {
     .close_restricted = close_restricted,
 };
 
-// Minimal RAII wrappers so we don't leak libinput / udev objects.
+// Minimal RAII wrappers so we don't leak libinput / udev objects
+// (constitution IV).
 struct UdevCtx {
     udev* handle;
 
@@ -66,86 +84,249 @@ struct LibinputCtx {
     explicit operator bool() const { return handle != nullptr; }
 };
 
-const char* event_type_name(libinput_event_type type)
+// ---- Command line ----------------------------------------------------------
+
+constexpr std::string_view kUsageText =
+    "usage: shaker [FLAG]\n"
+    "\n"
+    "Detect shakes of your pointer devices and run a configured command.\n"
+    "\n"
+    "Flags:\n"
+    "  --debug      verbose detection trace on stderr (calibration mode)\n"
+    "  --help       print this usage and exit 0\n"
+    "  --version    print version and exit 0\n"
+    "\n"
+    "Configured entirely from:\n"
+    "  $XDG_CONFIG_HOME/shaker/config.toml\n"
+    "  (defaults to ~/.config/shaker/config.toml)\n";
+
+struct Options {
+    bool debug = false;
+};
+
+enum class ParseResult { Continue, StopExit };
+
+ParseResult parse_args(const int argc, const char* const* argv, Options& options,
+                       int& exit_code)
 {
-    switch (type) {
-    case LIBINPUT_EVENT_DEVICE_ADDED: return "DEVICE_ADDED";
-    case LIBINPUT_EVENT_DEVICE_REMOVED: return "DEVICE_REMOVED";
-    case LIBINPUT_EVENT_KEYBOARD_KEY: return "KEYBOARD_KEY";
-    case LIBINPUT_EVENT_POINTER_MOTION: return "POINTER_MOTION";
-    case LIBINPUT_EVENT_POINTER_MOTION_ABSOLUTE: return "POINTER_MOTION_ABSOLUTE";
-    case LIBINPUT_EVENT_POINTER_BUTTON: return "POINTER_BUTTON";
-    case LIBINPUT_EVENT_POINTER_AXIS: return "POINTER_AXIS";
-    case LIBINPUT_EVENT_TOUCH_DOWN: return "TOUCH_DOWN";
-    case LIBINPUT_EVENT_TOUCH_UP: return "TOUCH_UP";
-    case LIBINPUT_EVENT_TOUCH_MOTION: return "TOUCH_MOTION";
-    case LIBINPUT_EVENT_TOUCH_FRAME: return "TOUCH_FRAME";
-    default: return "OTHER";
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view arg = argv[i];
+        if (arg == "--help") {
+            std::printf("%s", kUsageText.data());
+            std::fflush(stdout);
+            exit_code = 0;
+            return ParseResult::StopExit;
+        }
+        if (arg == "--version") {
+            std::printf("shaker %s\n", shaker::project_version.data());
+            std::fflush(stdout);
+            exit_code = 0;
+            return ParseResult::StopExit;
+        }
+        if (arg == "--debug") {
+            options.debug = true;
+            continue;
+        }
+        std::fprintf(stderr, "shaker: unrecognized flag '%.*s'\n",
+                     static_cast<int>(arg.size()), arg.data());
+        std::fprintf(stderr, "usage: shaker [--debug]\n");
+        exit_code = 2;
+        return ParseResult::StopExit;
     }
+    return ParseResult::Continue;
 }
 
-void handle_event(libinput_event* ev)
-{
-    const auto type = libinput_event_get_type(ev);
+// ---- Device events and the detection pipeline ------------------------------
 
-    switch (type) {
+struct Pipeline {
+    shaker::DetectionCore core;
+    std::string command;
+    bool debug = false;
+    int64_t last_sample_t_usec = -1;
+    int64_t reference_t_usec = -1;
+};
+
+void handle_device_event(Pipeline& pipeline, libinput_event* ev)
+{
+    switch (libinput_event_get_type(ev)) {
     case LIBINPUT_EVENT_DEVICE_ADDED: {
         auto* dev = libinput_event_get_device(ev);
         std::printf("[+] device added: %s (%s)\n",
                     libinput_device_get_name(dev),
                     libinput_device_get_sysname(dev));
-        // Take an FD reference so the device stays enumerable while we hold it.
-        libinput_device_ref(dev);
         break;
     }
     case LIBINPUT_EVENT_DEVICE_REMOVED: {
         auto* dev = libinput_event_get_device(ev);
         std::printf("[-] device removed: %s\n", libinput_device_get_name(dev));
-        libinput_device_unref(dev);
-        break;
-    }
-    case LIBINPUT_EVENT_KEYBOARD_KEY: {
-        auto* k = libinput_event_get_keyboard_event(ev);
-        std::printf("key %s code=%u seat=%s\n",
-                    libinput_event_keyboard_get_key_state(k) == LIBINPUT_KEY_STATE_PRESSED
-                        ? "down"
-                        : "up",
-                    libinput_event_keyboard_get_key(k),
-                    libinput_seat_get_logical_name(libinput_device_get_seat(libinput_event_get_device(ev))));
         break;
     }
     case LIBINPUT_EVENT_POINTER_MOTION: {
-        auto* p = libinput_event_get_pointer_event(ev);
-        std::printf("motion dx=%.2f dy=%.2f\n",
-                    libinput_event_pointer_get_dx(p),
-                    libinput_event_pointer_get_dy(p));
-        break;
-    }
-    case LIBINPUT_EVENT_POINTER_BUTTON: {
-        auto* p = libinput_event_get_pointer_event(ev);
-        std::printf("button %s button=%u\n",
-                    libinput_event_pointer_get_button_state(p) == LIBINPUT_BUTTON_STATE_PRESSED
-                        ? "down"
-                        : "up",
-                    libinput_event_pointer_get_button(p));
+        auto* pointer = libinput_event_get_pointer_event(ev);
+        const int64_t t_usec =
+            static_cast<int64_t>(libinput_event_pointer_get_time_usec(pointer));
+        const double dx = libinput_event_pointer_get_dx(pointer);
+        const double dy = libinput_event_pointer_get_dy(pointer);
+
+        if (pipeline.last_sample_t_usec >= 0 && t_usec < pipeline.last_sample_t_usec) {
+            // libinput's queue is monotonic, but a clock regression from a
+            // device must not corrupt detection (contract §2.2).
+            std::fprintf(stderr,
+                         "shaker: non-monotonic timestamps from device; "
+                         "sample dropped\n");
+            break;
+        }
+        pipeline.last_sample_t_usec = t_usec;
+
+        const shaker::DetectionResult result =
+            pipeline.core.feed(shaker::Sample{t_usec, dx, dy});
+
+        if (pipeline.debug) {
+            // Calibration trace (constitution VI); adds visibility only
+            // (contract §2.2). Timeline is relative to the first sample.
+            if (pipeline.reference_t_usec < 0) {
+                pipeline.reference_t_usec = t_usec;
+            }
+            const double elapsed =
+                static_cast<double>(t_usec - pipeline.reference_t_usec) / 1e6;
+            std::fprintf(stderr, "debug: t=+%.3fs speed=%.0f state=%s\n", elapsed,
+                         pipeline.core.ema_speed(),
+                         shaker::state_name(pipeline.core.state()).data());
+            if (pipeline.core.state() == shaker::DetectionState::Sustaining) {
+                std::fprintf(stderr, "debug: window=+%.3fs\n",
+                             static_cast<double>(pipeline.core.window_elapsed_usec())
+                                 / 1e6);
+            }
+        }
+
+        if (result.triggered) {
+            if (pipeline.debug) {
+                std::fprintf(stderr, "debug: TRIGGER at t=+%.3fs peak=%.0f\n",
+                             static_cast<double>(t_usec - pipeline.reference_t_usec)
+                                 / 1e6,
+                             result.peak_speed);
+            }
+            std::printf("shake! speed=%.0f units/s (peak %.0f) → running: %s\n",
+                        pipeline.core.ema_speed(), result.peak_speed,
+                        pipeline.command.c_str());
+            std::fflush(stdout);
+            shaker::spawn_detached_shell_command(pipeline.command);
+        }
         break;
     }
     default:
-        std::printf("event: %s\n", event_type_name(type));
+        // Keyboard, buttons, axis, touch, gestures … are not shake inputs;
+        // every pointer-capable device is covered by the seat model
+        // (FR-015) and consumption is silent (contract §2.1).
         break;
     }
     std::fflush(stdout);
 }
 
-int run()
+// Block the terminate signals and hand deliver them to a signalfd so the
+// loop reacts to them as poll data (no async signal-handler side effects)
+// — contracts/runtime-behavior.md §6. SIGHUP is blocked too but ignored in
+// the loop (reserved for a future config reload).
+[[nodiscard]] int create_signal_fd(shaker::UniqueFd& out)
 {
+    sigset_t mask;
+    ::sigemptyset(&mask);
+    for (const int signo : {SIGINT, SIGTERM, SIGHUP}) {
+        ::sigaddset(&mask, signo);
+    }
+    if (::sigprocmask(SIG_BLOCK, &mask, nullptr) != 0) {
+        return -errno;
+    }
+    out.reset(::signalfd(-1, &mask, SFD_CLOEXEC));
+    if (!out.valid()) {
+        return -errno;
+    }
+    return 0;
+}
+
+// Runs until the daemon wants to exit; returns the process exit code.
+[[nodiscard]] int event_loop(libinput* li, int signal_fd, Pipeline& pipeline)
+{
+    pollfd fds[2] = {
+        {.fd = libinput_get_fd(li), .events = POLLIN, .revents = 0},
+        {.fd = signal_fd, .events = POLLIN, .revents = 0},
+    };
+
+    for (;;) {
+        int rc = ::poll(fds, 2, -1);
+        if (rc < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            std::fprintf(stderr, "shaker: poll failed: %s\n", std::strerror(errno));
+            return 1;
+        }
+
+        if ((fds[1].revents & POLLIN) != 0) {
+            signalfd_siginfo info{};
+            const ssize_t n = ::read(fds[1].fd, &info, sizeof(info));
+            if (n == static_cast<ssize_t>(sizeof(info))
+                && (info.ssi_signo == SIGINT || info.ssi_signo == SIGTERM)) {
+                std::fprintf(stderr, "shaker: exiting on signal\n");
+                return 0;
+            }
+            // Anything else (e.g. SIGHUP in v1): ignore and keep running.
+        }
+
+        if ((fds[0].revents & POLLIN) == 0) {
+            continue;
+        }
+
+        const int status = libinput_dispatch(li);
+        if (status != 0) {
+            std::fprintf(stderr, "shaker: libinput_dispatch failed: %s\n", std::strerror(-status));
+            return 1;
+        }
+
+        while (libinput_event* ev = libinput_get_event(li)) {
+            handle_device_event(pipeline, ev);
+            libinput_event_destroy(ev);
+        }
+    }
+}
+
+int run(const bool debug)
+{
+    // Reserve the SIGHUP slot; spawned children are reaped automatically
+    // (contracts/runtime-behavior.md §5).
+    shaker::ignore_sigchld();
+
+    // Configuration first: an invalid config must never reach libinput
+    // (FR-010/FR-011, US3 scenarios). Unknown keys warn on stderr but are
+    // non-fatal (contract §2.2); the three numeric keys fall back to their
+    // documented defaults (FR-012).
+    std::vector<std::string> warnings;
+    const shaker::Config config = [&] {
+        const auto loaded = shaker::load_config(&warnings);
+        if (!loaded.has_value()) {
+            // Contract §3 prints exactly `shaker: ...` + exits 1, before
+            // any device is opened.
+            std::fprintf(stderr, "shaker: %s\n", loaded.error().detail.c_str());
+            std::exit(1);
+        }
+        for (const std::string& warning : warnings) {
+            std::fprintf(stderr, "shaker: %s\n", warning.c_str());
+        }
+        return *loaded;
+    }();
+
+    Pipeline pipeline{
+        .core = shaker::DetectionCore{shaker::to_detection_params(config)},
+        .command = config.command,
+        .debug = debug,
+    };
+
     UdevCtx udev;
     if (!udev) {
         std::fprintf(stderr, "failed to create udev context: %s\n", std::strerror(errno));
         return 1;
     }
 
-    // Takes its own reference to the udev context.
     LibinputCtx li(libinput_udev_create_context(&device_interface, nullptr, udev.handle));
     if (!li) {
         std::fprintf(stderr, "failed to create libinput context: %s\n", std::strerror(errno));
@@ -157,25 +338,27 @@ int run()
         return 1;
     }
 
-    std::printf("shaker: listening on seat0 (Ctrl+C to quit). Root permissions may be required.\n");
+    std::printf("shaker %s: watching seat0 — pid %d\n",
+                shaker::project_version.data(), ::getpid());
+    std::fflush(stdout);
 
-    for (;;) {
-        const int status = libinput_dispatch(li.handle);
-        if (status != 0) {
-            std::fprintf(stderr, "libinput_dispatch failed: %s\n", std::strerror(-status));
-            return 1;
-        }
-
-        while (libinput_event* ev = libinput_get_event(li.handle)) {
-            handle_event(ev);
-            libinput_event_destroy(ev);
-        }
+    shaker::UniqueFd signal_fd;
+    if (const int rc = create_signal_fd(signal_fd); rc < 0) {
+        std::fprintf(stderr, "failed to set up signal handling: %s\n", std::strerror(-rc));
+        return 1;
     }
+
+    return event_loop(li.handle, signal_fd.get(), pipeline);
 }
 
 } // namespace
 
-int main()
+int main(int argc, char* argv[])
 {
-    return run();
+    Options options;
+    int exit_code = 0;
+    if (parse_args(argc, argv, options, exit_code) == ParseResult::StopExit) {
+        return exit_code;
+    }
+    return run(options.debug);
 }
