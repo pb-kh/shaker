@@ -201,6 +201,35 @@ TEST_CASE("duplicate timestamp sample is not fatal")
     (void)feed_shake(core, 1.01, 40, 120.0, 0.02);
 }
 
+TEST_CASE("slow big-amplitude sweep never triggers (cadence gate)")
+{
+    // User-validated complaint: slow side-to-side movement with big
+    // amplitude must stay silent. Legs of 0.5 s at ±1500 units: each leg
+    // is far slower than the 350 ms cadence cap, so its flips are
+    // rejected and never accumulate into a window.
+    DetectionCore core(params_for(40.0, 0.25, 2.0));
+    CHECK(feed_shake(core, 0, 16, 1500.0, 0.5).empty());
+    CHECK(core.state() == DetectionState::Idle);
+}
+
+TEST_CASE("oversized fast travel never triggers (travel gate)")
+{
+    // Full-screen flicks: ±3000-unit legs fast enough to pass the cadence
+    // cap, but far over the 2000-unit travel cap → cursor travel, not
+    // shaking.
+    DetectionCore core(params_for(40.0, 0.25, 2.0));
+    CHECK(feed_shake(core, 0, 60, 3000.0, 0.03).empty());
+    CHECK(core.state() == DetectionState::Idle);
+}
+
+TEST_CASE("fast small shakes still trigger under the travel/cadence gates")
+{
+    // No regression: ±60-unit legs at 30 ms — well inside both gates.
+    DetectionCore core(params_for(40.0, 0.25, 2.0));
+    auto times = feed_shake(core, 0, 40, 60.0, 0.03);
+    CHECK(times.size() == 1);
+}
+
 TEST_CASE("trigger result carries timestamp, peak, and single-shot semantics")
 {
     DetectionCore core(params_for(40.0, 0.25, 2.0));

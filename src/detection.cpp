@@ -14,6 +14,17 @@ constexpr int kReversalsRequired = 3;
 // Longest tolerated idle gap before the swing run resets (a device at
 // rest must not carry stale swing state into the next fetch).
 constexpr int64_t kIdleResetGapUsec = 500'000;
+// Maximum flip interval (event µs) for a direction change to count as
+// part of a shake: shaking is FAST oscillation. Slow deliberate sweeps
+// (big amplitude, long legs) produce flips farther apart than this and
+// abandoned windows instead of accumulating swings (user-validated:
+// slow side-to-side movement with big amplitude must stay silent).
+constexpr int64_t kMaxFlipIntervalUsec = 350'000;
+// Maximum displacement (pointer units) a single swing leg may cover:
+// real shakes sweep an arm's worth of a desk at most. Anything larger is
+// cursor travel, not shaking (user-validated: full-screen sweeps must
+// stay silent).
+constexpr double kMaxLegDisplacement = 2000.0;
 } // namespace
 
 void DetectionCore::reset_window()
@@ -89,16 +100,46 @@ DetectionResult DetectionCore::feed(const Sample& sample)
             const double threshold_excurse = params_.sensitivity;
             int& phase = phase_[axis];
             double& extreme = extreme_[axis];
+            const int64_t& leg_start_t = leg_start_t_usec_[axis];
+            double& leg_start_pos = leg_start_pos_[axis];
+
+            // A counted flip: bookkeeping shared by both phases.
+            const auto count_flip = [&]() {
+                ++swings_;
+                if (!window_open_) {
+                    window_open_ = true;
+                    first_flip_t_usec_ = sample.t_usec;
+                }
+                phase = -phase;
+                extreme = pos;
+                leg_start_t_usec_[axis] = sample.t_usec;
+                leg_start_pos = pos;
+            };
+            // A flip that fails the travel/cadence gates: poison the
+            // window (reset the run) but re-anchor the fresh opposite
+            // phase at this point so the hunt continues.
+            const auto reject_leg = [&]() {
+                reset_window();
+                state_ = DetectionState::Idle;
+                phase = -phase;
+                extreme = pos;
+                leg_start_t_usec_[axis] = sample.t_usec;
+                leg_start_pos = pos;
+            };
 
             if (phase == 0) {
                 // Any axis reaching meaningful displacement opens rising or
-                // falling phase for that axis.
+                // falling phase for that axis (the leg starts here).
                 if (pos > threshold_excurse) {
                     phase = +1;
                     extreme = pos;
+                    leg_start_t_usec_[axis] = sample.t_usec;
+                    leg_start_pos = pos;
                 } else if (pos < -threshold_excurse) {
                     phase = -1;
                     extreme = pos;
+                    leg_start_t_usec_[axis] = sample.t_usec;
+                    leg_start_pos = pos;
                 }
                 continue;
             }
@@ -106,34 +147,47 @@ DetectionResult DetectionCore::feed(const Sample& sample)
                 if (pos > extreme) {
                     extreme = pos; // still moving out
                 } else if (extreme - pos >= threshold_excurse) {
-                    // Moved back by a full swing leg: count a direction
-                    // change and start the opposite phase.
-                    ++swings_;
-                    if (!window_open_) {
-                        window_open_ = true;
-                        first_flip_t_usec_ = sample.t_usec;
+                    // Moved back by a full swing leg: candidate direction
+                    // change. Travel/cadence gates: shakes are FAST small
+                    // oscillation — slow deliberate sweeps (long legs) and
+                    // full-screen travel (oversized legs) are cursor
+                    // movement, not shaking (user-validated: slow
+                    // side-to-side movement with big amplitude must stay
+                    // silent).
+                    const int64_t leg_duration =
+                        sample.t_usec - leg_start_t;
+                    const double leg_travel =
+                        std::fabs(extreme - leg_start_pos);
+                    if (leg_duration > kMaxFlipIntervalUsec
+                        || leg_travel > kMaxLegDisplacement) {
+                        reject_leg();
+                        continue;
                     }
-                    phase = -1;
-                    extreme = pos;
+                    count_flip();
                 }
             } else { // phase == -1
                 if (pos < extreme) {
                     extreme = pos;
                 } else if (pos - extreme >= threshold_excurse) {
-                    ++swings_;
-                    if (!window_open_) {
-                        window_open_ = true;
-                        first_flip_t_usec_ = sample.t_usec;
+                    const int64_t leg_duration =
+                        sample.t_usec - leg_start_t;
+                    const double leg_travel =
+                        std::fabs(extreme - leg_start_pos);
+                    if (leg_duration > kMaxFlipIntervalUsec
+                        || leg_travel > kMaxLegDisplacement) {
+                        reject_leg();
+                        continue;
                     }
-                    phase = +1;
-                    extreme = pos;
+                    count_flip();
                 }
             }
         }
 
-        if (window_open_) {
-            // The window stayed open: the state machine reports SUSTAIN
-            // from the first counted swing until the window settles.
+        if (window_open_ && swings_ >= 2) {
+            // The state machine reports SUSTAIN once an oscillation is
+            // actually forming (two swings); a lone candidate swing keeps
+            // the reported state Idle so slow sweeps (whose cadence/travel
+            // gates keep resetting runs at swing 1) never read as SUSTAIN.
             state_ = DetectionState::Sustaining;
 
             const int64_t window_elapsed = sample.t_usec - first_flip_t_usec_;
@@ -160,7 +214,8 @@ DetectionResult DetectionCore::feed(const Sample& sample)
                 return hit;
             }
         }
-        if (state_ == DetectionState::Sustaining && !window_open_) {
+        if (state_ == DetectionState::Sustaining
+            && (!window_open_ || swings_ < 2)) {
             state_ = DetectionState::Idle;
         }
         return none;

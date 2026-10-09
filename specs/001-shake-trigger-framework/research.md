@@ -150,6 +150,11 @@ COOLDOWN    : t ≥ cooldown_until    → back to IDLE evaluation on next sample
 - The window is anchored to **event timestamps** only: no wall-clock calls
   inside the core, so the whole behavior is replayable in unit tests with
   synthetic sample sequences.
+- Research R-04 v3 (user feedback): slow, big-amplitude side-to-side
+  movement registered as a shake. Added internal travel/cadence gates on
+  swing legs (≤ 350 ms and ≤ 2000 pointer units per leg); SUSTAIN now
+  reports from the 2nd swing. Rejected alternative: exposing the caps as
+  config keys — YAGNI for v1, the fixed defaults cover the reported case.
 
 **Rationale**: FR-007 requires a motion meeting *both* sensitivity and
 duration; a speed threshold plus sustained-elapsed requirement satisfies it

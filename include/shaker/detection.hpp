@@ -1,14 +1,17 @@
 // Pure, hardware-agnostic shake detection core (constitution V).
 //
 // v2 semantics (research R-04): a shake is an oscillation — repeated
-// direction changes with real displacement. The core accumulates
-// displacement per axis and, with per-axis hysteresis, counts a *swing*
-// whenever an axis position moves back by at least `sensitivity` pointer
-// units from its phase extreme. A shake triggers when `kReversalsRequired`
-// (internal constant, 3) swings occur within `duration` seconds
-// (event-time anchored). The downstream Idle/Sustaining/Cooldown state
-// machine semantics, cooldown gating and output shape are unchanged from
-// data-model.md §3/§4.
+// direction changes with real (but bounded) displacement at a fast
+// cadence. The core accumulates displacement per axis and, with per-axis
+// hysteresis, counts a *swing* whenever an axis position moves back by at
+// least `sensitivity` pointer units from its phase extreme. A shake
+// triggers when `kReversalsRequired` (internal constant, 3) swings occur
+// within `duration` seconds (event-time anchored). Two internal gates
+// keep non-shake movement silent: legs longer than 350 ms (slow deliberate
+// sweeps) and legs covering more than 2000 pointer units (full-screen
+// travel) reject the swing run. The downstream Idle/Sustaining/Cooldown
+// state machine semantics, cooldown gating and output shape are unchanged
+// from data-model.md §3/§4.
 //
 // The core contains no I/O, no clocks, and no allocations: behavior is a
 // deterministic function of (DetectionParams, sample history), so it is
@@ -96,6 +99,8 @@ private:
     double position_[kAxisCount] = {0.0, 0.0}; // running displacement
     double extreme_[kAxisCount] = {0.0, 0.0};  // phase extreme of position
     int phase_[kAxisCount] = {0, 0};           // 0 none, +1 rising, -1 falling
+    int64_t leg_start_t_usec_[kAxisCount] = {0, 0};    // leg open time
+    double leg_start_pos_[kAxisCount] = {0.0, 0.0};    // leg open position
 
     int swings_ = 0;                 // swings within the open window
     int64_t first_flip_t_usec_ = 0;  // window anchor (event time)

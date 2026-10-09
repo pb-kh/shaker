@@ -127,7 +127,10 @@ configuration (FR-010 path).
   inside the duration window, so this gates *how far the device must move
   back and forth* — raise it for bigger, more deliberate shakes; lower it
   if gentle shakes are missed. Ordinary cursor wandering rarely reverses
-  direction 3× inside the window, so it stays quiet.
+  direction 3× inside the window, so it stays quiet. Internally (not
+  configurable in v1), a swing leg must also be fast (≤ 350 ms) and travel
+  ≤ 2000 pointer units — slow deliberate sweeps and full-screen travel are
+  cursor movement, not shaking (v2 gates, added from user feedback).
 - **duration**: how much time the swing sequence may take (from the first
   swing) to complete before the run is abandoned. Raise for slower,
   lazier shaking sessions; keep short for snappy response.

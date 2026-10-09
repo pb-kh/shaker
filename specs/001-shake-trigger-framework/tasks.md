@@ -140,6 +140,14 @@ failures can no longer produce confusing jobs at runtime.
 - [x] T016 [P] Zero-warning gate sweep across all targets including subprojects (constitution III): fix any project-source warnings directly (no `-Wno-`/`#pragma` suppression anywhere); if a third-party header warns, handle subproject-side (e.g. wrap `override_options`: documented in plan.md Complexity Tracking) and record the outcome
 - [x] T017 Execute quickstart.md end-to-end as the final validation (SC-001…SC-007 table) — meson test green, acceptance-row walk-through recorded in the PR/commit message, constitution commit discipline (small atomic commits per task, constitution gate 4)
 - [x] T018 [US3] Auto-initialize a missing config file
+- [x] T023 [US1] Slow-sweep false positive (user-validated): slow, big-
+  amplitude side-to-side movement registered as a shake. Internal gates
+  in the core (research R-04 v3): swing-leg duration ≤ 350 ms and leg
+  travel ≤ 2000 pointer units, else the swing run poisons; SUSTAIN
+  reported from the 2nd swing (misc run-state hygiene: reject/expiry
+  paths settle to Idle). Tests: slow sweep silent, oversized fast travel
+  silent, fast-small shake unaffected; data-model/contract/research
+  updated
 - [x] T020 [US3] v1→v2 config migration: rewrite untouched v1-generated
   templates (`sensitivity = 8000.0` in units/second — unreachably large
   under v2's pointer-units-per-swing semantics, which swallowed all real

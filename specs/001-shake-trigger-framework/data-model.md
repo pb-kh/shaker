@@ -66,14 +66,23 @@ Behavior (per sample; both axes run independently, either counts):
                 ───────────────────►
 Position      : position[axis] += d[axis]
 Phase none    : |position| ≥ sensitivity → open phase (+rising if position > 0, else −falling),
-                                       extreme = position
+                                       extreme = position, leg starts here
 Rising        : position > extreme       → extreme = position   (still moving out)
               : extreme − position ≥ sensitivity
-                                         → swing++ (flip to rising↔falling; extreme = position)
+                                         → candidate flip (see gates), swing++ ↺
 Falling       : symmetric
 
+Gates (internal constants, R-04 v3 — user-validated: slow big-amplitude
+sweeps must stay silent): a candidate flip is REJECTED — poisoning the
+window — when its leg is slower or travels farther than a shake can:
+  leg duration (since phase open) > 350 ms      → slow sweep, reject
+  leg travel |extreme − leg_open_pos| > 2000 u  → cursor travel, reject
+A rejected leg keeps the hunt alive (opposite phase re-anchored) with
+swings reset to 0.
+
 Window        : opens at the first counted swing (first_flip = t)
-SUSTAIN       : any swing keeps the machine in Sustaining while the window is open
+SUSTAIN       : reported from the 2nd counted swing on (a lone candidate
+                swing keeps state Idle)
               : (t − first_flip) > duration    → window abandoned (state → Idle, hunt restarted)
 TRIGGER       : swings ≥ 3 (internal constant) within the window
                                            → emit Trigger{at = t, speed = instant swing speed}
@@ -83,8 +92,8 @@ COOLDOWN      : t < until → silent (never retrigger, FR-008)
               : t ≥ until → Idle + full reset (evaluate fresh from next sample)
 ```
 
-State summary: `Idle` = no open window; `Sustaining` = open swing window;
-`Cooldown` = suppressing window.
+State summary: `Idle` = no open window; `Sustaining` = open swing window
+with ≥ 2 swings; `Cooldown` = suppressing window.
 
 Guarantees (each maps to a test requirement):
 - G-1: never emits two Triggers closer than `cooldown` apart (FR-008/FR-009,
