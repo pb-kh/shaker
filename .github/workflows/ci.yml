@@ -1,0 +1,184 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  build:
+    name: Build and test (Linux x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            meson ninja-build libinput-dev libudev-dev g++-14
+
+      # g++-14 guarantees __cplusplus == 202302L for the C++23 fuse in meson.build
+      - name: Configure (release build)
+        env:
+          CC: gcc-14
+          CXX: g++-14
+        run: meson setup build -Dbuildtype=release
+
+      # doctest is fetched automatically via the committed subprojects/doctest.wrap
+      - name: Compile
+        run: meson compile -C build
+
+      - name: Run unit tests
+        run: meson test -C build --print-errorlogs
+
+      - name: Stage release files
+        run: |
+          mkdir -p dist
+          cp build/shaker dist/shaker-linux-x86_64
+          cp udev/99-shaker-mouse-access.rules dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shaker-linux-x86_64
+          path: dist/
+
+  rpm:
+    name: Build RPM (Fedora x86_64)
+    runs-on: ubuntu-24.04
+    container:
+      image: fedora:latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            rpm-build \
+            gcc-c++ meson ninja-build libinput-devel systemd-devel \
+            redhat-rpm-config systemd-rpm-macros
+
+      # The project version lives in meson.build ('shaker', ..., version: 'X.Y.Z');
+      # stamp it into the spec so the RPM version can't drift from the build.
+      - name: Create source tarball
+        run: |
+          VER="$(grep -om1 "version: '[^']*'" meson.build | sed "s/version: '//;s/'.*//")"
+          echo "SHAKER_VERSION=$VER" >> "$GITHUB_ENV"
+          mkdir -p "/tmp/shaker-$VER" "$HOME/rpmbuild/SOURCES" "$HOME/rpmbuild/SPECS"
+          tar --exclude=./.git --exclude=./build --exclude=./dist \
+              --exclude=./subprojects/packagecache \
+              -cf - . | tar -xf - -C "/tmp/shaker-$VER"
+          tar -C /tmp -czf "$HOME/rpmbuild/SOURCES/shaker-$VER.tar.gz" "shaker-$VER"
+          cp packaging/rpm/shaker.spec "$HOME/rpmbuild/SPECS/"
+          sed -i "s/^Version:.*/Version:        $VER/" "$HOME/rpmbuild/SPECS/shaker.spec"
+
+      - name: Build RPM
+        run: rpmbuild -bb "$HOME/rpmbuild/SPECS/shaker.spec"
+
+      - name: Smoke-test install and stage artifact
+        run: |
+          MAIN_RPM="$(find "$HOME/rpmbuild/RPMS/x86_64" \
+            -name 'shaker-*.rpm' ! -name '*debug*' | head -1)"
+          dnf install -y "$MAIN_RPM"
+          test -x /usr/bin/shaker
+          rpm -ql shaker
+          mkdir -p dist
+          cp "$MAIN_RPM" dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shaker-rpm
+          path: dist/*.rpm
+
+  release:
+    name: Create release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, rpm]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download built files
+        uses: actions/download-artifact@v4
+        with:
+          pattern: shaker-*
+          merge-multiple: true
+          path: dist/
+
+      - name: Create checksums
+        run: cd dist && sha256sum * > SHA256SUMS
+
+      - name: Write release notes
+        run: |
+          cat > notes.md <<'EOF'
+          ## What to copy where
+
+          Verify downloads with the manifest if you like:
+          `sha256sum -c SHA256SUMS`
+
+          ### Fedora: install the RPM — nothing to copy
+
+          ```sh
+          sudo dnf install ./shaker-*.rpm
+          ```
+
+          The package puts everything where it belongs for you: the daemon
+          in `/usr/bin/shaker`, the udev rule in `/usr/lib/udev/rules.d/`,
+          and its scriptlets reload udev on install. On first run shaker
+          creates `~/.config/shaker/config.toml` with defaults — edit the
+          generated `command` and restart it.
+
+          ### Other distros: two files
+
+          **1. `shaker-linux-x86_64`** — the daemon, copy it onto your
+          `PATH`:
+
+          ```sh
+          install -m 755 shaker-linux-x86_64 ~/.local/bin/shaker
+          # or system-wide:
+          # sudo install -m 755 shaker-linux-x86_64 /usr/local/bin/shaker
+          ```
+
+          **2. `99-shaker-mouse-access.rules`** — udev rule, copy it into
+          `/etc/udev/rules.d/`:
+
+          ```sh
+          sudo install -m 644 99-shaker-mouse-access.rules /etc/udev/rules.d/
+          sudo udevadm control --reload
+          sudo udevadm trigger --subsystem-match=input
+          ```
+
+          No reboot needed. If your user is already in the `input` group,
+          the rule is redundant — you may skip it.
+
+          ### Run it
+
+          Start shaker from your compositor's autostart so it inherits the
+          session environment (`WAYLAND_DISPLAY`, …), e.g. for sway:
+          `exec ~/.local/bin/shaker`, niri:
+          `spawn-at-startup "~/.local/bin/shaker"`.
+
+          ### Requirements
+
+          - 64-bit GNU/Linux. The RPM targets current Fedora; the bare
+            binary is built on Ubuntu 24.04 (recent glibc) — if your distro
+            is older, build from source instead.
+          - libinput ≥ 1.24 + libudev (runtime dependencies).
+          EOF
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/shaker-*.rpm \
+            dist/shaker-linux-x86_64 \
+            dist/99-shaker-mouse-access.rules \
+            dist/SHA256SUMS \
+            --title "shaker $GITHUB_REF_NAME" \
+            --notes-file notes.md

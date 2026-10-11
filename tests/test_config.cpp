@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <cstdio>
+#include <unistd.h>
 
 namespace {
 
@@ -478,6 +479,12 @@ TEST_CASE("US3: a v2-template config is auto-migrated to the v3 shake factor")
 
 TEST_CASE("US3 #1: an existing unreadable file still errors with cannot read")
 {
+    // Root bypasses permission checks (e.g. this suite inside an RPM build
+    // or container), so "none" permissions do not make anything unreadable.
+    if (::geteuid() == 0) {
+        MESSAGE("- skipping: file permissions cannot defeat the root user");
+        return;
+    }
     // Create a target parent we cannot enter, so the config path itself is
     // unreadable (and NOT missing — auto-init must not kick in).
     ::setenv("XDG_CONFIG_HOME", "/tmp/opencode/cfg/readfail", 1);
