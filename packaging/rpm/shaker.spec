@@ -7,6 +7,9 @@ License:        MIT
 URL:            https://github.com/pb-kh/shaker
 Source0:        %{name}-%{version}.tar.gz
 
+# No upstream %changelog here; versioning comes from meson.build.
+%undefine _source_date_epoch_from_changelog
+
 BuildRequires:  meson >= 1.1
 BuildRequires:  ninja-build
 BuildRequires:  gcc-c++
@@ -27,14 +30,17 @@ Runtime dependencies: libinput + libudev only.
 %autosetup
 
 %build
-%meson -Dudev_rules_dir=%{_udevrulesdir}
+# Unit tests are run by the project CI on every push/PR, not inside the RPM
+# build: the Meson macros disable wrap downloads, so the test-only WrapDB
+# doctest subproject cannot be used here and Fedora's doctest-devel has no
+# Meson support. Note that -Dtests=disabled makes Meson never even look for
+# doctest. (Do not write macro names like % signs in comments: rpm expands
+# them even in comments.)
+%meson -Dtests=disabled -Dudev_rules_dir=%{_udevrulesdir}
 %meson_build
 
 %install
 %meson_install
-
-%check
-%meson_test
 
 %files
 %doc README.md

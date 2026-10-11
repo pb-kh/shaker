@@ -4,3 +4,10 @@ option(
   value: '/etc/udev/rules.d',
   description: 'Directory the shaker udev rule is installed into (absolute path; /usr/lib/udev/rules.d for package-managed installs)',
 )
+
+option(
+  'tests',
+  type: 'feature',
+  value: 'auto',
+  description: 'Build the doctest unit-test executables (doctest comes from the WrapDB subproject; RPM packaging passes -Dtests=disabled, CI runs the tests)',
+)
