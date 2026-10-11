@@ -176,6 +176,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
+            -R "$GITHUB_REPOSITORY" \
             dist/shaker-*.rpm \
             dist/shaker-linux-x86_64 \
             dist/99-shaker-mouse-access.rules \

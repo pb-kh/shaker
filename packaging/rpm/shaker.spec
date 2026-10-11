@@ -49,6 +49,8 @@ Runtime dependencies: libinput + libudev only.
 
 %post
 # Fold the new udev rule into the running udev database and reprocess the
-# input devices. Errors are non-fatal — udev may not be running (containers).
-/usr/bin/udevadm control --reload || :
-/usr/bin/udevadm trigger --subsystem-match=input --action=change || :
+# input devices. Skipped silently when udev is not running (containers).
+if [ -x /usr/bin/udevadm ]; then
+  /usr/bin/udevadm control --reload-rules || :
+  /usr/bin/udevadm trigger --subsystem-match=input --action=change || :
+fi
