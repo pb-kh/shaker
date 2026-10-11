@@ -28,8 +28,8 @@ explicit control:
 ```sh
 mkdir -p ~/.config/shaker
 cat > ~/.config/shaker/config.toml <<'EOF'
-sensitivity = 40.0     # pointer units per swing leg — expect to tune this
-duration    = 0.25     # seconds the swing sequence may take
+sensitivity = 4.0      # shake factor: path / covered area (KDE default 4)
+duration    = 1.0      # seconds of pointer path considered
 cooldown    = 2.0      # seconds between allowed triggers
 command     = "notify-send 'Shake detected'"
 EOF
@@ -46,13 +46,12 @@ the three numbers have defaults and must satisfy
 ```
 
 - Start line on stdout; calibration trace on stderr
-  (`debug: t=+…s speed=… swings=… state=…`).
+  (`debug: t=+…s speed=… segments=… factor=… state=…`).
 - **Calibration ritual**: while watching the trace —
-  (1) idle baseline: `swings=0`, state IDLE;
-  (2) ordinary pointer use: direction changes are rare — `swings` stays
-      below 3 per window → no trigger;
-  (3) actual shake: `swings` reaches 3 inside the window → trigger.
-      Raise `sensitivity` if ordinary wiggles ever complete a window;
+  (1) idle baseline: `factor=0.00`, state IDLE;
+  (2) ordinary pointer use: `factor` stays around 1–2 → no trigger;
+  (3) actual shake: `factor` climbs past `sensitivity` → trigger.
+      Raise `sensitivity` if ordinary movement ever reaches it;
       lower it if your shakes are missed; raise `duration` for slow,
       lazy shaking styles.
 - Membership in the `input` group avoids sudo (`sudo gpasswd -a $USER input`),
@@ -60,27 +59,12 @@ the three numbers have defaults and must satisfy
 
 ## 4. Background running (recommended)
 
-Foreground is the contract (constitution VI); backgrounding is your choice:
+Foreground is the contract (constitution VI); backgrounding is your choice.
+Start it from the compositor's autostart so the command inherits the
+graphical session environment — see README "Background operation":
 
-```console
-$ shaker &            # classic
-```
-
-or a systemd user unit readable from README's suggested snippet:
-
-```ini
-# ~/.config/systemd/user/shaker.service
-[Unit]
-Description=Shake-triggered command daemon
-[Service]
-ExecStart=%h/projects/shaker/build/shaker
-Restart=on-failure
-[Install]
-WantedBy=default.target
-```
-
-```sh
-systemctl --user enable --now shaker
+```kdl
+spawn-at-startup "/path/to/build/shaker"   // niri
 ```
 
 ## 5. Acceptance-scenario validation
@@ -92,7 +76,7 @@ systemctl --user enable --now shaker
 | US1-3 failing command | `command = "false"` in config; shake twice | two `spawned` runs (one per window); daemon never exits |
 | US2-1 sensitivity tuning | halve sensitivity; milder shake | now triggers (wasn't) |
 | US2-2 cooldown | cooldown = 5.0; shake at +1s, +5.1s, +6s | only +5.1s+ triggers (continuous shakes suppressed — G-3) |
-| US2-3 duration | swings taking longer than `duration` to complete a window | no trigger (G-2) |
+| US2-3 duration | back-and-forth too slow to reach the factor within `duration` | no trigger (G-2) |
 | US2-4 straight drag | fast one-way cursor movement (no reversals) | no trigger (G-6) |
 | US3-1 missing file | `rm` the config file (`config.toml.bak` backup kept) | file auto-created with defaults + info stderr note; daemon runs; nothing is overwritten if user config exists. Unwritable location → `cannot write default config` + exit 1 |
 | US3-2 broken config | `duration = -1` | stderr: `key "duration" must be > 0`; exit 1 |

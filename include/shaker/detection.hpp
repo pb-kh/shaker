@@ -1,32 +1,38 @@
 // Pure, hardware-agnostic shake detection core (constitution V).
 //
-// v2 semantics (research R-04): a shake is an oscillation — repeated
-// direction changes with real (but bounded) displacement at a fast
-// cadence. The core accumulates displacement per axis and, with per-axis
-// hysteresis, counts a *swing* whenever an axis position moves back by at
-// least `sensitivity` pointer units from its phase extreme. A shake
-// triggers when `kReversalsRequired` (internal constant, 3) swings occur
-// within `duration` seconds (event-time anchored). Two internal gates
-// keep non-shake movement silent: legs longer than 350 ms (slow deliberate
-// sweeps) and legs covering more than 2000 pointer units (full-screen
-// travel) reject the swing run. The downstream Idle/Sustaining/Cooldown
-// state machine semantics, cooldown gating and output shape are unchanged
+// v3 semantics (research R-04 v4): the KDE Plasma / PowerToys shake
+// detector. The core integrates pointer deltas into a trail and keeps the
+// trail's vertices from the last `duration` seconds, merging consecutive
+// motion in the same direction into one segment (a new vertex appears
+// only on a direction change). A shake triggers when the trail is much
+// longer than the diagonal of the box that contains it:
+//
+//     path_length / bbox_diagonal > sensitivity   (KWin default 4)
+//
+// Ordinary pointing — however fast, curved, or corrective — travels about
+// as far as its extent (ratio ≈ 1–2). Only repeated back-and-forth over
+// the same small area piles up path without growing the box. The ratio is
+// scale-free, so device speed, acceleration and amplitude do not matter;
+// an internal minimum extent (100 pointer units, as in KWin) keeps
+// hand-tremor jitter out. Cooldown gating and output shape are unchanged
 // from data-model.md §3/§4.
 //
-// The core contains no I/O, no clocks, and no allocations: behavior is a
-// deterministic function of (DetectionParams, sample history), so it is
-// fully replayable in unit tests without device access. Timestamps are
-// monotonic microseconds (device event time), never the wall clock.
+// The core contains no I/O, no clocks, and no allocations (fixed-size
+// trail ring): behavior is a deterministic function of (DetectionParams,
+// sample history), so it is fully replayable in unit tests without device
+// access. Timestamps are monotonic microseconds (device event time).
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
 namespace shaker {
 
 struct DetectionParams {
-    double sensitivity = 40.0; // pointer units per swing leg (hysteresis)
-    int64_t duration_usec = 250'000;
+    double sensitivity = 4.0; // shake factor: path length / trail diagonal
+    int64_t duration_usec = 1'000'000; // trail history window
     int64_t cooldown_usec = 2'000'000;
 };
 
@@ -53,7 +59,7 @@ enum class DetectionState { Idle, Sustaining, Cooldown };
 struct DetectionResult {
     bool triggered = false;
     int64_t at_usec = 0;     // timestamp of the triggering sample (if triggered)
-    double peak_speed = 0.0; // swing speed (units/s) at the triggering sample
+    double peak_speed = 0.0; // pointer speed (units/s) at the triggering sample
 };
 
 class DetectionCore {
@@ -65,47 +71,58 @@ public:
     // (returned result is a no-trigger) without corrupting state.
     DetectionResult feed(const Sample& sample);
 
+    // Forget the trail (cooldown is kept). Hosts call it while a pointer
+    // button is held: dragging (text selection, window moves) is never a
+    // shake (KWin does the same).
+    void reset();
+
     [[nodiscard]] DetectionState state() const { return state_; }
 
-    // Swing count within the currently open window (0 while no window is
-    // open) — the host layer surfaces it in the `--debug` trace.
-    [[nodiscard]] int swings() const { return swings_; }
+    // Trail vertices currently inside the window — direction changes + 1
+    // (`--debug` trace).
+    [[nodiscard]] std::size_t segments() const { return count_; }
 
-    // Most recent instantaneous swing speed (units/s) — used by the host
-    // layer's `--debug` trace ("speed=").
+    // Shake factor (path / diagonal) of the current trail; 0 while the
+    // trail is smaller than the minimum extent (`--debug` trace).
+    [[nodiscard]] double shake_factor() const { return last_factor_; }
+
+    // Most recent instantaneous pointer speed (units/s) — `--debug` trace.
     [[nodiscard]] double last_speed() const { return last_speed_; }
 
-    // Elapsed window time in µs — only meaningful while a window is open
-    // (Sustaining); hosts use it for the `--debug` trace.
-    [[nodiscard]] int64_t window_elapsed_usec() const
-    {
-        return state_ == DetectionState::Sustaining
-                   ? last_t_usec_ - first_flip_t_usec_
-                   : 0;
-    }
+    // Time span of the trail inside the window (`--debug` trace).
+    [[nodiscard]] int64_t window_elapsed_usec() const;
 
 private:
-    enum Axis { kAxisX = 0, kAxisY = 1, kAxisCount = 2 };
+    struct Vertex {
+        double x = 0.0;
+        double y = 0.0;
+        int64_t t_usec = 0;
+    };
+    // Fixed ring capacity. A real shake needs ~5–10 direction changes per
+    // window; when jitter overflows it, the oldest vertices are dropped,
+    // which only shortens the effective window.
+    static constexpr std::size_t kCapacity = 128;
 
-    void reset_window();
-    void reset_all();
+    [[nodiscard]] Vertex& at(std::size_t i) { return trail_[(head_ + i) % kCapacity]; }
+    [[nodiscard]] const Vertex& at(std::size_t i) const
+    {
+        return trail_[(head_ + i) % kCapacity];
+    }
+    void push(const Vertex& v);
+    void pop_front();
 
     DetectionParams params_;
 
     int64_t last_t_usec_ = -1; // -1 = no anchor yet
+    double x_ = 0.0;           // integrated pointer position
+    double y_ = 0.0;
 
-    // Per-axis hysteresis run (one machine per axis; either axis can carry
-    // the shake).
-    double position_[kAxisCount] = {0.0, 0.0}; // running displacement
-    double extreme_[kAxisCount] = {0.0, 0.0};  // phase extreme of position
-    int phase_[kAxisCount] = {0, 0};           // 0 none, +1 rising, -1 falling
-    int64_t leg_start_t_usec_[kAxisCount] = {0, 0};    // leg open time
-    double leg_start_pos_[kAxisCount] = {0.0, 0.0};    // leg open position
+    std::array<Vertex, kCapacity> trail_{};
+    std::size_t head_ = 0;
+    std::size_t count_ = 0;
 
-    int swings_ = 0;                 // swings within the open window
-    int64_t first_flip_t_usec_ = 0;  // window anchor (event time)
-    bool window_open_ = false;
-    double last_speed_ = 0.0;        // most recent instantaneous swing speed
+    double last_factor_ = 0.0;
+    double last_speed_ = 0.0;
 
     DetectionState state_ = DetectionState::Idle;
     int64_t cooldown_until_usec_ = 0;

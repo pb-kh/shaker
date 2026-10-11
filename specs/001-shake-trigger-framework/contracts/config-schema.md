@@ -49,8 +49,8 @@ Flat TOML document with four recognized top-level scalar keys:
 
 | Key | TOML type | Unit | Default (when omitted) | Constraint |
 |-----|-----------|------|------------------------|------------|
-| `sensitivity` | float (int accepted) | pointer units per swing leg | `40.0` | > 0.0 |
-| `duration`    | float (int accepted) | seconds | `0.25` | > 0.0 |
+| `sensitivity` | float (int accepted) | shake factor (path / trail diagonal) | `4.0` | > 0.0 (warning above 20) |
+| `duration`    | float (int accepted) | seconds | `1.0` | > 0.0 |
 | `cooldown`    | float (int accepted) | seconds | `2.0` | ≥ 0.0 |
 | `command`     | string  | shell command | **none — required** | non-empty after parse; executed via `/bin/sh -c` |
 
@@ -70,12 +70,12 @@ Flat TOML document with four recognized top-level scalar keys:
 ### Complete example
 
 ```toml
-# How far each swing leg must travel, in pointer units, to count as a
-# direction change.
-sensitivity = 40.0
+# Shake factor: how many times longer the pointer's path must be than
+# the area it covered within `duration` (KDE Plasma default: 4).
+sensitivity = 4.0
 
-# How long (seconds) the swing sequence may take to complete a shake.
-duration = 0.25
+# How far back (seconds) the pointer's path is considered.
+duration = 1.0
 
 # How long (seconds) to ignore further shakes after one triggers.
 cooldown = 2.0
@@ -122,18 +122,18 @@ configuration (FR-010 path).
 
 ## 4. Semantics of each key (contract meaning)
 
-- **sensitivity**: minimum displacement of each swing leg (pointer units)
-  that counts as a direction change. A shake = 3 swings (internal constant)
-  inside the duration window, so this gates *how far the device must move
-  back and forth* — raise it for bigger, more deliberate shakes; lower it
-  if gentle shakes are missed. Ordinary cursor wandering rarely reverses
-  direction 3× inside the window, so it stays quiet. Internally (not
-  configurable in v1), a swing leg must also be fast (≤ 350 ms) and travel
-  ≤ 2000 pointer units — slow deliberate sweeps and full-screen travel are
-  cursor movement, not shaking (v2 gates, added from user feedback).
-- **duration**: how much time the swing sequence may take (from the first
-  swing) to complete before the run is abandoned. Raise for slower,
-  lazier shaking sessions; keep short for snappy response.
+- **sensitivity**: the shake factor (v3, KDE Plasma / PowerToys
+  semantics). A shake triggers when the pointer path inside the `duration`
+  window is more than `sensitivity` times the diagonal of its bounding
+  box. Straight or curved pointing scores ≈ 1–2, one fast circle ≈ 2.2;
+  each extra back-and-forth leg adds ≈ 1. Raise it if ordinary movement
+  triggers, lower it (never below ~2.5) if shakes are missed. Internally,
+  trails whose box is under 100 pointer units (tremor) never trigger, and
+  motion with a pointer button held is ignored. Values above 20 load with
+  a warning (likely a stale v2 pointer-unit setting).
+- **duration**: how far back (seconds) the pointer path is considered.
+  Longer windows accept slower shaking but also let more ordinary
+  movement accumulate.
 - **cooldown**: after a shake triggers, further shakes are ignored for
   this many seconds. `0.0` disables suppression. It applies in device
   event time.

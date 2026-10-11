@@ -35,21 +35,26 @@ namespace {
     return text;
 }
 
+// Shake factors above this are reachable only by frantic shaking over a
+// tiny area; a value this high is most likely a stale v2 (pointer-unit)
+// setting and gets a load warning.
+constexpr double kMaxPlausibleShakeFactor = 20.0;
+
 // The template written when the config file does not exist (contract §1
 // auto-initialization): the documented example values, commented keys, and
 // an example command the user may edit.
 constexpr std::string_view kDefaultConfigTemplate =
     "# shaker configuration (auto-generated on first run)\n"
-    "# Shaker detects pointer oscillation (back-and-forth movement) and\n"
-    "# runs `command`. Edit and restart to apply (no hot reload).\n"
+    "# Shaker detects a pointer shake (rapid back-and-forth over a small\n"
+    "# area) and runs `command`. Edit and restart to apply (no hot reload).\n"
     "\n"
-    "# How far each swing leg must travel, in pointer units, to count as\n"
-    "# a direction change. Raise if ordinary wiggles trigger it, lower if\n"
-    "# your shakes are missed.\n"
-    "sensitivity = 40.0\n"
+    "# Shake factor: how many times longer the pointer's path must be than\n"
+    "# the area it covered within `duration`. Raise if ordinary movement\n"
+    "# triggers it, lower if your shakes are missed (KDE Plasma default: 4).\n"
+    "sensitivity = 4.0\n"
     "\n"
-    "# How long (seconds) the swings may take to complete the shake.\n"
-    "duration = 0.25\n"
+    "# How far back (seconds) the pointer's path is considered.\n"
+    "duration = 1.0\n"
     "\n"
     "# How long (seconds) to ignore further shakes after one triggers.\n"
     "cooldown = 2.0\n"
@@ -74,7 +79,7 @@ constexpr std::string_view kDefaultConfigTemplate =
 }
 
 // The v0/v1 template (auto-generated before the v2 sensitivity rework).
-// Files that match it verbatim are auto-migrated to the current template —
+// Files that match an old template verbatim are auto-migrated to the current template —
 // explicitly NOT rewriting hand-edited files (an exact match can only be
 // an untouched generated file, never user work).
 constexpr std::string_view kDefaultConfigTemplateV1 =
@@ -95,10 +100,31 @@ constexpr std::string_view kDefaultConfigTemplateV1 =
     "# Run through /bin/sh -c when a shake triggers (the only required key).\n"
     "command = \"notify-send 'Shake detected'\"\n";
 
-[[nodiscard]] bool migrate_v1_default_config(const std::filesystem::path& path,
-                                             const std::string& contents)
+// The v2 template (swing-leg sensitivity, before the v3 shake-factor
+// rework).
+constexpr std::string_view kDefaultConfigTemplateV2 =
+    "# shaker configuration (auto-generated on first run)\n"
+    "# Shaker detects pointer oscillation (back-and-forth movement) and\n"
+    "# runs `command`. Edit and restart to apply (no hot reload).\n"
+    "\n"
+    "# How far each swing leg must travel, in pointer units, to count as\n"
+    "# a direction change. Raise if ordinary wiggles trigger it, lower if\n"
+    "# your shakes are missed.\n"
+    "sensitivity = 40.0\n"
+    "\n"
+    "# How long (seconds) the swings may take to complete the shake.\n"
+    "duration = 0.25\n"
+    "\n"
+    "# How long (seconds) to ignore further shakes after one triggers.\n"
+    "cooldown = 2.0\n"
+    "\n"
+    "# Run through /bin/sh -c when a shake triggers (the only required key).\n"
+    "command = \"notify-send 'Shake detected'\"\n";
+
+[[nodiscard]] bool migrate_old_default_config(const std::filesystem::path& path,
+                                              const std::string& contents)
 {
-    if (contents != kDefaultConfigTemplateV1) {
+    if (contents != kDefaultConfigTemplateV1 && contents != kDefaultConfigTemplateV2) {
         return false;
     }
     std::ofstream rewritten(path, std::ios::binary | std::ios::trunc);
@@ -629,6 +655,16 @@ std::expected<Config, ConfigError> parse_config(
                << config.sensitivity << ")";
         return std::unexpected(ConfigError{.detail = detail.str(), .path = path});
     }
+    if (config.sensitivity > kMaxPlausibleShakeFactor && warnings != nullptr) {
+        // Hand-edited v2 files carry pointer units here (e.g. 40): as a
+        // shake factor that never triggers. Valid, but almost surely stale.
+        std::ostringstream detail;
+        detail << "config '" << path << "': key \"sensitivity\" = "
+               << config.sensitivity
+               << " is a shake factor (path / covered area, default 4); "
+                  "values this high practically never trigger";
+        warnings->push_back(detail.str());
+    }
     if (config.duration_sec <= 0.0) {
         std::ostringstream detail;
         detail << "config '" << path << "': key \"duration\" must be > 0 (got "
@@ -693,20 +729,19 @@ std::expected<Config, ConfigError> load_config(std::vector<std::string>* warning
     contents << file.rdbuf();
     std::string contents_str = contents.str();
 
-    // An untouched v1-generated template carries a sensitivity value in
-    // v1 units (units/second), which v2 reads as pointer units per swing
-    // leg — an impossible threshold that silently swallowed every real
-    // shake (user-validated regression). Migrate it verbatim; hand-edited
-    // files are never rewritten.
-    if (migrate_v1_default_config(path, contents_str)) {
+    // An untouched v1/v2-generated template carries a sensitivity in old
+    // units (v1: units/second, v2: pointer units per swing leg), which v3
+    // reads as a shake factor — an impossible threshold that silently
+    // swallows every real shake (user-validated regression). Migrate it
+    // verbatim; hand-edited files are never rewritten.
+    if (migrate_old_default_config(path, contents_str)) {
         // Parse the migrated content (the disk file and the returned
         // config must agree).
         contents_str.assign(kDefaultConfigTemplate);
         if (warnings != nullptr) {
-            warnings->push_back("migrated v1 default config '" + path_str
-                                + "' to the v2 swing-based sensitivity "
-                                  "(sensitivity = 40.0 pointer units per "
-                                  "swing leg)");
+            warnings->push_back("migrated old default config '" + path_str
+                                + "' to the v3 shake factor "
+                                  "(sensitivity = 4.0, duration = 1.0)");
         }
     }
 

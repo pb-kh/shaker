@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -60,8 +61,8 @@ TEST_CASE("US3-3 / SC-003: omitted numeric keys fall back to documented defaults
     const auto parse = shaker::parse_config("/tmp/x.toml",
                                             std::string(kMinimalConfig), nullptr);
     REQUIRE(parse.has_value());
-    CHECK(parse->sensitivity == doctest::Approx(40.0));
-    CHECK(parse->duration_sec == doctest::Approx(0.25));
+    CHECK(parse->sensitivity == doctest::Approx(4.0));
+    CHECK(parse->duration_sec == doctest::Approx(1.0));
     CHECK(parse->cooldown_sec == doctest::Approx(2.0));
     CHECK(parse->command == "echo hi");
 }
@@ -315,7 +316,7 @@ TEST_CASE("US3: load path — unknown key warning is non-fatal, defaults apply")
     std::vector<std::string> warnings;
     auto loaded = shaker::load_config(&warnings);
     REQUIRE(loaded.has_value());
-    CHECK(loaded->sensitivity == doctest::Approx(40.0)); // default (FR-012)
+    CHECK(loaded->sensitivity == doctest::Approx(4.0)); // default (FR-012)
     CHECK(warnings.size() == 1);
     CHECK(warnings[0].find("ignoring unknown key \"duracion\"") != std::string::npos);
     CHECK(warnings[0].find("/tmp/opencode/cfg/warnings/shaker/config.toml")
@@ -332,8 +333,8 @@ TEST_CASE("US3: a missing config file is auto-initialized with defaults")
     auto loaded = shaker::load_config(&warnings);
     REQUIRE(loaded.has_value());
     CHECK(std::filesystem::exists("/tmp/opencode/cfg/autocreate/fresh/shaker/config.toml"));
-    CHECK(loaded->sensitivity == doctest::Approx(40.0));
-    CHECK(loaded->duration_sec == doctest::Approx(0.25));
+    CHECK(loaded->sensitivity == doctest::Approx(4.0));
+    CHECK(loaded->duration_sec == doctest::Approx(1.0));
     CHECK(loaded->cooldown_sec == doctest::Approx(2.0));
     CHECK(loaded->command == "notify-send 'Shake detected'");
     REQUIRE(!warnings.empty());
@@ -359,7 +360,7 @@ TEST_CASE("US3: an unwritable location fails with 'cannot write default config'"
           != std::string::npos);
 }
 
-TEST_CASE("US3: a v1-template config is auto-migrated to v2 units")
+TEST_CASE("US3: a v1-template config is auto-migrated to the current units")
 {
     // Install the exact v1-generated template (old units: units/second).
     std::error_code rm_ec;
@@ -389,21 +390,21 @@ TEST_CASE("US3: a v1-template config is auto-migrated to v2 units")
     std::vector<std::string> warnings;
     auto loaded = shaker::load_config(&warnings);
     REQUIRE(loaded.has_value());
-    // The migrated template carries the v2 default threshold.
-    CHECK(loaded->sensitivity == doctest::Approx(40.0));
+    // The migrated template carries the current default threshold.
+    CHECK(loaded->sensitivity == doctest::Approx(4.0));
     bool migrated = false;
     for (const std::string& warning : warnings) {
-        if (warning.find("migrated v1 default config") != std::string::npos) {
+        if (warning.find("migrated old default config") != std::string::npos) {
             migrated = true;
         }
     }
     CHECK(migrated);
 
-    // Second load: the file is now the v2 template, nothing to migrate.
+    // Second load: the file is now the current template, nothing to migrate.
     std::vector<std::string> second_warnings;
     auto again = shaker::load_config(&second_warnings);
     REQUIRE(again.has_value());
-    CHECK(again->sensitivity == doctest::Approx(40.0));
+    CHECK(again->sensitivity == doctest::Approx(4.0));
     for (const std::string& warning : second_warnings) {
         CHECK(warning.find("migrated") == std::string::npos);
     }
@@ -430,7 +431,49 @@ TEST_CASE("US3: a hand-edited config is never migrated or rewritten")
     REQUIRE(loaded.has_value());
     CHECK(loaded->sensitivity == doctest::Approx(8000.0)); // untouched
     CHECK(loaded->command == "echo mine");
-    CHECK(warnings.empty());
+    // Only the stale-value hint, never a migration.
+    REQUIRE(warnings.size() == 1);
+    CHECK(warnings[0].find("is a shake factor") != std::string::npos);
+    std::ifstream reread("/tmp/opencode/cfg/nomigrate/shaker/config.toml");
+    const std::string on_disk((std::istreambuf_iterator<char>(reread)),
+                              std::istreambuf_iterator<char>());
+    CHECK(on_disk == user_config);
+}
+
+TEST_CASE("US3: a v2-template config is auto-migrated to the v3 shake factor")
+{
+    std::error_code rm_ec;
+    std::filesystem::remove_all("/tmp/opencode/cfg/migrate2", rm_ec);
+    std::filesystem::create_directories("/tmp/opencode/cfg/migrate2/shaker");
+    {
+        std::ofstream file("/tmp/opencode/cfg/migrate2/shaker/config.toml");
+        file << "# shaker configuration (auto-generated on first run)\n"
+                "# Shaker detects pointer oscillation (back-and-forth movement) and\n"
+                "# runs `command`. Edit and restart to apply (no hot reload).\n"
+                "\n"
+                "# How far each swing leg must travel, in pointer units, to count as\n"
+                "# a direction change. Raise if ordinary wiggles trigger it, lower if\n"
+                "# your shakes are missed.\n"
+                "sensitivity = 40.0\n"
+                "\n"
+                "# How long (seconds) the swings may take to complete the shake.\n"
+                "duration = 0.25\n"
+                "\n"
+                "# How long (seconds) to ignore further shakes after one triggers.\n"
+                "cooldown = 2.0\n"
+                "\n"
+                "# Run through /bin/sh -c when a shake triggers (the only required key).\n"
+                "command = \"notify-send 'Shake detected'\"\n";
+    }
+    ::setenv("XDG_CONFIG_HOME", "/tmp/opencode/cfg/migrate2", 1);
+
+    std::vector<std::string> warnings;
+    auto loaded = shaker::load_config(&warnings);
+    REQUIRE(loaded.has_value());
+    CHECK(loaded->sensitivity == doctest::Approx(4.0));
+    CHECK(loaded->duration_sec == doctest::Approx(1.0));
+    REQUIRE(warnings.size() == 1);
+    CHECK(warnings[0].find("migrated old default config") != std::string::npos);
 }
 
 TEST_CASE("US3 #1: an existing unreadable file still errors with cannot read")

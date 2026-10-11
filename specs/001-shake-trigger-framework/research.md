@@ -204,6 +204,32 @@ redefines the detector as **direction-reversal counting with hysteresis**:
 - cooldown/state machine/output contracts, idle/gap resets, and the pure,
   replayable character of the core are unchanged.
 
+**Refinement (v3 / R-04 v4, false positives)**: the v2 swing counter
+still fired during ordinary use. Root causes: X and Y swings shared one
+counter (a curve flips both axes); a 40-unit hysteresis is crossed by any
+overshoot-and-correct; 3 reversals is only "there-back-there"; and the
+measure is amplitude-only, so a wiggle while travelling counts. v3 adopts
+the detector shipped by KDE Plasma (KWin `plugins/shakecursor/
+shakedetector.cpp`, defaults: 1000 ms window, factor 4, min diagonal
+100 px; resets while a button is held) and Microsoft PowerToys Find My
+Mouse (same ratio, 1000 ms, 400 %, plus 1000-unit min path; raw deltas):
+
+- integrate deltas into a trail; keep its vertices from the last
+  `duration` seconds; same-direction motion (1-unit tolerance per axis)
+  extends the last segment, so vertices only appear on direction changes;
+- on each new vertex: shake iff `path / bbox_diagonal > sensitivity` and
+  `bbox_diagonal ≥ 100`;
+- `sensitivity` becomes the shake factor (default 4.0), `duration` the
+  history window (default 1.0 s); untouched v1/v2 templates migrate;
+- the host resets the trail while any pointer button is held (drags).
+- The v2 travel/cadence gates are gone: slow sweeps fail the ratio on
+  their own. Behaviour change: very fast, large-amplitude flicking (e.g.
+  ±3000 units at 30 ms legs) now triggers — it is a shake by shape.
+- macOS "Shake mouse pointer to locate" is closed-source with no public
+  parameters; GNOME's Jiggle extension (turning-angle sum > 500° within
+  500 ms plus one segment > 300 px) was considered and rejected as less
+  principled and resolution-dependent.
+
 **Alternatives considered (v2)**:
 - *Lower the speed threshold (sensitivity ~1,000 units/s)*: your reversal
   troughs (~600–900) would stay above it only barely; any real pointer

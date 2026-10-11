@@ -38,7 +38,8 @@ Human-readable one-line events, flushed immediately:
 | start | `shaker <version>: watching seat0 — pid <pid>` |
 | device added | `[+] device added: <name> (<sysname>)` |
 | device removed | `[-] device removed: <name>` |
-| shake triggered | `shake! speed=<speed> units/s → running: <command>` (speed = instantaneous swing speed; multi-line scripts show their first line + `…`) |
+| shake triggered | `shake! speed=<speed> units/s → running: <command>` (speed = instantaneous pointer speed; multi-line scripts show their first line + `…`) |
+| shake while previous command still running | `shake! speed=<speed> units/s → skipped: previous command still running` |
 
 ### 2.2 stderr — diagnostics (errors + `--debug` trace)
 
@@ -54,7 +55,7 @@ errors).
 | event-timestamp regression (non-fatal) | `shaker: non-monotonic timestamps from device; sample dropped` |
 | command spawn failure (non-fatal) | `shaker: spawn failed: <errno reason>` |
 | child exec failure inside spawned shell | inherited appearance on the daemon's stderr: `sh: <command>: not found` (exit 127 path; status not tracked) |
-| --debug per-sample trace (non-fatal, verbose) | `debug: t=+<elapsed>s speed=<speed> swings=<n> state=<IDLE\|SUSTAIN\|COOLDOWN>` (+ `window=+<elapsed>s` while SUSTAIN) |
+| --debug per-sample trace (non-fatal, verbose) | `debug: t=+<elapsed>s speed=<speed> segments=<n> factor=<path/diagonal> state=<IDLE\|SUSTAIN\|COOLDOWN>` (+ `window=+<elapsed>s` while SUSTAIN) |
 | --debug trigger trace | `debug: TRIGGER at t=+<elapsed>s peak=<peak>` |
 
 `--debug` never changes *decisions* — only adds visibility (otherwise a
@@ -96,6 +97,11 @@ errors).
   well under the 250 ms budget.
 - Trigger rate cap = one execution per cooldown window (core-enforced;
   SC-006).
+- Single instance: a trigger that fires while the previously spawned
+  command (the `/bin/sh` process) is still alive is skipped, not queued.
+  Liveness is observed through a pidfd (`pidfd_open`, Linux ≥ 5.3) polled
+  non-blockingly at trigger time; reaping stays automatic. Commands that
+  background their work (`cmd &`) count as finished once the shell exits.
 - Spawn failure (fork shortage) is a stderr diagnostic; daemon continues.
 
 ## 6. Resource behavior (SC-005, FR-018)

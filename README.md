@@ -49,12 +49,12 @@ exist, shaker **creates it with defaults** (creating missing directories)
 and runs — edit the generated `command` and restart to set the action.
 
 ```toml
-# How far each swing leg must travel, in pointer units, to count as a
-# direction change.
-sensitivity = 40.0
+# Shake factor: how many times longer the pointer's path must be than
+# the area it covered within `duration` (KDE Plasma default: 4).
+sensitivity = 4.0
 
-# How long (seconds) the swing sequence may take to complete a shake.
-duration = 0.25
+# How far back (seconds) the pointer's path is considered.
+duration = 1.0
 
 # How long (seconds) to ignore shakes after one triggers.
 cooldown = 2.0
@@ -63,9 +63,14 @@ cooldown = 2.0
 command = "notify-send 'Shake detected'"
 ```
 
-A shake is recognized as **3 direction changes within the `duration`
-window** (each swing leg traveling at least `sensitivity` pointer units) —
-the physical back-and-forth motion, which keeps ordinary pointer use quiet.
+A shake is recognized the way KDE Plasma's *Shake Cursor* and PowerToys'
+*Find My Mouse* do it: within the last `duration` seconds, the pointer's
+path must be more than `sensitivity` times longer than the diagonal of
+the box it stayed in (and that box must be at least 100 pointer units).
+Ordinary pointing — fast, curved, or with overshoot corrections — covers
+about as much ground as its path (factor ≈ 1–2); only repeated
+back-and-forth over the same spot piles up path. Motion while a mouse
+button is held (dragging, selecting) is ignored.
 
 - `sensitivity`, `duration` and `cooldown` fall back to these defaults when
   omitted; `command` is the only **required** key.
@@ -118,29 +123,26 @@ Calibrate your values with
 ./build/shaker --debug
 ```
 
-which prints a per-sample trace (speed, swing count + detection state) on
+which prints a per-sample trace (speed, trail segments, shake factor + detection state) on
 stderr. See `specs/001-shake-trigger-framework/quickstart.md` for the full
 walk-through.
 
 ## Background operation
 
-shaker is a foreground process (observable on stdout). To keep it resident,
-use e.g. `shaker &` or a systemd user service:
+shaker is a foreground process (observable on stdout). Start it from your
+compositor's autostart: it then inherits the session environment
+(`WAYLAND_DISPLAY`, session D-Bus) that the configured command needs, and
+lives exactly as long as the session. Your user must be in the `input`
+group (`sudo gpasswd -a $USER input`, then log in again).
 
-```ini
-# ~/.config/systemd/user/shaker.service
-[Unit]
-Description=Shake-triggered command daemon
-[Service]
-ExecStart=/path/to/build/shaker
-Restart=on-failure
-[Install]
-WantedBy=default.target
+niri (`~/.config/niri/config.kdl`):
+
+```kdl
+spawn-at-startup "/path/to/build/shaker"
 ```
 
-```sh
-systemctl --user enable --now shaker
-```
+sway / Hyprland equivalents: `exec /path/to/build/shaker` /
+`exec-once = /path/to/build/shaker`.
 
 ## Specification
 

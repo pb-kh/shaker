@@ -8,9 +8,9 @@
 
 shaker watches device motion on the seat via libinput's udev backend and
 executes a user-configured command when the device is shaken: a
-*direction-reversal oscillation* — 3 swing legs (direction changes of at
-least the configured sensitivity, in pointer units each) that complete
-inside the configured duration window, with a cooldown suppressing
+*path-to-extent ratio* (KDE Plasma / PowerToys): the pointer path inside
+the configured duration window exceeds `sensitivity` times the diagonal of
+its bounding box, with a cooldown suppressing
 immediate repeats. The daemon is a resident, foreground, text-out process
 configured entirely from a single TOML file at
 `XDG_CONFIG_HOME/shaker/config.toml` (four settings: sensitivity,

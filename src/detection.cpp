@@ -1,61 +1,69 @@
 #include "shaker/detection.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 namespace shaker {
 
 namespace {
-// A shake needs at least this many direction changes (kReversalsRequired)
-// inside the `duration` window to count as a shake instead of one-off
-// gestures, doodles, or plain pointer wandering (research R-04 v2). Three
-// is the minimum that separates "there and back" from continued
-// oscillation.
-constexpr int kReversalsRequired = 3;
-// Longest tolerated idle gap before the swing run resets (a device at
-// rest must not carry stale swing state into the next fetch).
-constexpr int64_t kIdleResetGapUsec = 500'000;
-// Maximum flip interval (event µs) for a direction change to count as
-// part of a shake: shaking is FAST oscillation. Slow deliberate sweeps
-// (big amplitude, long legs) produce flips farther apart than this and
-// abandoned windows instead of accumulating swings (user-validated:
-// slow side-to-side movement with big amplitude must stay silent).
-constexpr int64_t kMaxFlipIntervalUsec = 350'000;
-// Maximum displacement (pointer units) a single swing leg may cover:
-// real shakes sweep an arm's worth of a desk at most. Anything larger is
-// cursor travel, not shaking (user-validated: full-screen sweeps must
-// stay silent).
-constexpr double kMaxLegDisplacement = 2000.0;
+// Trails whose bounding box is smaller than this (pointer units, diagonal)
+// are never a shake: hand tremor and sub-pixel jitter reverse direction
+// constantly but stay inside a tiny box (KWin: 100 logical pixels;
+// libinput's accelerated deltas are in the same unit).
+constexpr double kMinDiagonal = 100.0;
+// Per-axis motion below this (pointer units) counts as moving in either
+// direction, so one-unit jitter does not split a straight stroke into
+// many segments (KWin: 1).
+constexpr double kDirectionTolerance = 1.0;
+
+[[nodiscard]] bool same_direction(double a, double b)
+{
+    return (a >= -kDirectionTolerance && b >= -kDirectionTolerance)
+           || (a <= kDirectionTolerance && b <= kDirectionTolerance);
+}
 } // namespace
 
-void DetectionCore::reset_window()
+void DetectionCore::push(const Vertex& v)
 {
-    swings_ = 0;
-    window_open_ = false;
-    first_flip_t_usec_ = 0;
-    for (auto& axis_phase : phase_) {
-        axis_phase = 0;
+    if (count_ == kCapacity) {
+        pop_front();
     }
-    for (auto& axis_extreme : extreme_) {
-        axis_extreme = 0.0;
+    at(count_) = v;
+    ++count_;
+}
+
+void DetectionCore::pop_front()
+{
+    head_ = (head_ + 1) % kCapacity;
+    --count_;
+}
+
+void DetectionCore::reset()
+{
+    head_ = 0;
+    count_ = 0;
+    last_factor_ = 0.0;
+    if (state_ == DetectionState::Sustaining) {
+        state_ = DetectionState::Idle;
     }
 }
 
-void DetectionCore::reset_all()
+int64_t DetectionCore::window_elapsed_usec() const
 {
-    reset_window();
-    for (auto& axis_position : position_) {
-        axis_position = 0.0;
-    }
+    return count_ < 2 ? 0 : at(count_ - 1).t_usec - at(0).t_usec;
 }
 
 DetectionResult DetectionCore::feed(const Sample& sample)
 {
     const DetectionResult none{};
 
-    // No anchor yet: the very first sample cannot express displacement
-    // intervals, only spawn the timeline.
+    // No anchor yet: the very first sample cannot express a speed, only
+    // spawn the timeline (and the trail).
     if (last_t_usec_ < 0) {
         last_t_usec_ = sample.t_usec;
+        x_ += sample.dx;
+        y_ += sample.dy;
+        push(Vertex{x_, y_, sample.t_usec});
         return none;
     }
 
@@ -71,157 +79,83 @@ DetectionResult DetectionCore::feed(const Sample& sample)
         return none;
     }
 
-    const double swing_speed = std::hypot(sample.dx, sample.dy)
-                               / (static_cast<double>(dt) / 1'000'000.0);
-    last_speed_ = swing_speed;
+    last_speed_ = std::hypot(sample.dx, sample.dy)
+                  / (static_cast<double>(dt) / 1'000'000.0);
+    x_ += sample.dx;
+    y_ += sample.dy;
+    const Vertex now{x_, y_, sample.t_usec};
 
-    // An idle gap restarts the whole run (device was at rest).
-    if (dt > kIdleResetGapUsec) {
-        reset_all();
-    }
-
-    // Integrate displacement along both axes.
-    position_[kAxisX] += sample.dx;
-    position_[kAxisY] += sample.dy;
-
-    switch (state_) {
-    case DetectionState::Cooldown:
+    if (state_ == DetectionState::Cooldown) {
         if (sample.t_usec < cooldown_until_usec_) {
             return none;
         }
+        // Cooldown over: hunt again from a fresh trail anchored here.
         state_ = DetectionState::Idle;
-        reset_all();
-        return none;
-
-    case DetectionState::Idle:
-    case DetectionState::Sustaining: {
-        for (int axis = 0; axis < kAxisCount; ++axis) {
-            double& pos = position_[axis];
-            const double threshold_excurse = params_.sensitivity;
-            int& phase = phase_[axis];
-            double& extreme = extreme_[axis];
-            const int64_t& leg_start_t = leg_start_t_usec_[axis];
-            double& leg_start_pos = leg_start_pos_[axis];
-
-            // A counted flip: bookkeeping shared by both phases.
-            const auto count_flip = [&]() {
-                ++swings_;
-                if (!window_open_) {
-                    window_open_ = true;
-                    first_flip_t_usec_ = sample.t_usec;
-                }
-                phase = -phase;
-                extreme = pos;
-                leg_start_t_usec_[axis] = sample.t_usec;
-                leg_start_pos = pos;
-            };
-            // A flip that fails the travel/cadence gates: poison the
-            // window (reset the run) but re-anchor the fresh opposite
-            // phase at this point so the hunt continues.
-            const auto reject_leg = [&]() {
-                reset_window();
-                state_ = DetectionState::Idle;
-                phase = -phase;
-                extreme = pos;
-                leg_start_t_usec_[axis] = sample.t_usec;
-                leg_start_pos = pos;
-            };
-
-            if (phase == 0) {
-                // Any axis reaching meaningful displacement opens rising or
-                // falling phase for that axis (the leg starts here).
-                if (pos > threshold_excurse) {
-                    phase = +1;
-                    extreme = pos;
-                    leg_start_t_usec_[axis] = sample.t_usec;
-                    leg_start_pos = pos;
-                } else if (pos < -threshold_excurse) {
-                    phase = -1;
-                    extreme = pos;
-                    leg_start_t_usec_[axis] = sample.t_usec;
-                    leg_start_pos = pos;
-                }
-                continue;
-            }
-            if (phase == +1) {
-                if (pos > extreme) {
-                    extreme = pos; // still moving out
-                } else if (extreme - pos >= threshold_excurse) {
-                    // Moved back by a full swing leg: candidate direction
-                    // change. Travel/cadence gates: shakes are FAST small
-                    // oscillation — slow deliberate sweeps (long legs) and
-                    // full-screen travel (oversized legs) are cursor
-                    // movement, not shaking (user-validated: slow
-                    // side-to-side movement with big amplitude must stay
-                    // silent).
-                    const int64_t leg_duration =
-                        sample.t_usec - leg_start_t;
-                    const double leg_travel =
-                        std::fabs(extreme - leg_start_pos);
-                    if (leg_duration > kMaxFlipIntervalUsec
-                        || leg_travel > kMaxLegDisplacement) {
-                        reject_leg();
-                        continue;
-                    }
-                    count_flip();
-                }
-            } else { // phase == -1
-                if (pos < extreme) {
-                    extreme = pos;
-                } else if (pos - extreme >= threshold_excurse) {
-                    const int64_t leg_duration =
-                        sample.t_usec - leg_start_t;
-                    const double leg_travel =
-                        std::fabs(extreme - leg_start_pos);
-                    if (leg_duration > kMaxFlipIntervalUsec
-                        || leg_travel > kMaxLegDisplacement) {
-                        reject_leg();
-                        continue;
-                    }
-                    count_flip();
-                }
-            }
-        }
-
-        if (window_open_ && swings_ >= 2) {
-            // The state machine reports SUSTAIN once an oscillation is
-            // actually forming (two swings); a lone candidate swing keeps
-            // the reported state Idle so slow sweeps (whose cadence/travel
-            // gates keep resetting runs at swing 1) never read as SUSTAIN.
-            state_ = DetectionState::Sustaining;
-
-            const int64_t window_elapsed = sample.t_usec - first_flip_t_usec_;
-            if (window_elapsed > params_.duration_usec) {
-                // The swing run did not finish fast enough: reopen the hunt
-                // fresh (positions keep drifting; extremes re-anchor). The
-                // window closes NOW — no next sample is needed for the
-                // reported state to settle.
-                reset_window();
-                state_ = DetectionState::Idle;
-                return none;
-            }
-            if (swings_ >= kReversalsRequired) {
-                // Shake confirmed within the window: consume it, open the
-                // cooldown window at event time.
-                state_ = DetectionState::Cooldown;
-                cooldown_until_usec_ = sample.t_usec + params_.cooldown_usec;
-                const DetectionResult hit{
-                    .triggered = true,
-                    .at_usec = sample.t_usec,
-                    .peak_speed = swing_speed,
-                };
-                reset_all();
-                return hit;
-            }
-        }
-        if (state_ == DetectionState::Sustaining
-            && (!window_open_ || swings_ < 2)) {
-            state_ = DetectionState::Idle;
-        }
+        reset();
+        push(now);
         return none;
     }
+
+    // Forget trail vertices older than the window.
+    while (count_ > 0 && sample.t_usec - at(0).t_usec >= params_.duration_usec) {
+        pop_front();
     }
-    return none; // unreachable
+
+    // Still moving the same way: extend the last segment instead of adding
+    // a vertex. Only direction changes are evaluated (KWin, PowerToys).
+    if (count_ >= 2) {
+        Vertex& last = at(count_ - 1);
+        const Vertex& prev = at(count_ - 2);
+        if (same_direction(last.x - prev.x, now.x - last.x)
+            && same_direction(last.y - prev.y, now.y - last.y)) {
+            last = now;
+            return none;
+        }
+    }
+    push(now);
+
+    double left = at(0).x;
+    double right = left;
+    double top = at(0).y;
+    double bottom = top;
+    double path = 0.0;
+    for (std::size_t i = 1; i < count_; ++i) {
+        const Vertex& a = at(i - 1);
+        const Vertex& b = at(i);
+        path += std::hypot(b.x - a.x, b.y - a.y);
+        left = std::min(left, b.x);
+        right = std::max(right, b.x);
+        top = std::min(top, b.y);
+        bottom = std::max(bottom, b.y);
+    }
+
+    const double diagonal = std::hypot(right - left, bottom - top);
+    if (diagonal < kMinDiagonal) {
+        last_factor_ = 0.0;
+        state_ = DetectionState::Idle;
+        return none;
+    }
+    last_factor_ = path / diagonal;
+
+    if (last_factor_ > params_.sensitivity) {
+        // Shake confirmed: consume the trail, open the cooldown window at
+        // event time.
+        state_ = DetectionState::Cooldown;
+        cooldown_until_usec_ = sample.t_usec + params_.cooldown_usec;
+        head_ = 0;
+        count_ = 0;
+        return DetectionResult{
+            .triggered = true,
+            .at_usec = sample.t_usec,
+            .peak_speed = last_speed_,
+        };
+    }
+
+    // SUSTAIN: the trail is past half the trigger factor — an oscillation
+    // is forming (`--debug` visibility only).
+    state_ = last_factor_ >= params_.sensitivity / 2.0 ? DetectionState::Sustaining
+                                                       : DetectionState::Idle;
+    return none;
 }
 
 } // namespace shaker

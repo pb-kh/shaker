@@ -1,14 +1,16 @@
 // Unit tests for the pure detection core (constitution V): synthetic
 // (timestamp, dx, dy) sequences with no libinput, no udev, no files.
-// v2 semantics (research R-04): swings = direction changes with real
-// displacement; shake = ≥3 swings within `duration` (cooldown gating
-// unchanged). Includes a regression test built from the user-reported
-// Surface trace that was missed by the v1 sustained-speed detector.
+// v3 semantics (research R-04 v4, KDE Plasma / PowerToys): shake = the
+// pointer trail inside `duration` is more than `sensitivity` times longer
+// than the diagonal of its bounding box (≥ 100 units). Includes the
+// user-reported Surface trace (missed by v1) and the ordinary-movement
+// shapes that false-triggered the v2 swing counter.
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
 #include <shaker/detection.hpp>
 
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -31,6 +33,19 @@ DetectionParams params_for(double sensitivity_units,
         .duration_usec = static_cast<int64_t>(duration_sec * static_cast<double>(kUsecPerSec)),
         .cooldown_usec = static_cast<int64_t>(cooldown_sec * static_cast<double>(kUsecPerSec)),
     };
+}
+
+// Feed a straight stroke of `steps` samples, 2 ms apart; returns whether
+// anything triggered.
+[[nodiscard]] bool feed_stroke(DetectionCore& core, int64_t& t_usec, int steps,
+                               double dx, double dy)
+{
+    bool fired = false;
+    for (int i = 0; i < steps; ++i) {
+        t_usec += 2'000;
+        fired = core.feed(Sample{t_usec, dx, dy}).triggered || fired;
+    }
+    return fired;
 }
 
 // Feed `count` oscillation legs of `amplitude_units` pointer units each,
@@ -62,202 +77,198 @@ DetectionParams params_for(double sensitivity_units,
 
 } // namespace
 
-TEST_CASE("US1-1: gentle motion below sensitivity never triggers")
+TEST_CASE("US1-1: jitter inside a tiny area never triggers")
 {
-    DetectionCore core(params_for(40.0, 0.25, 2.0));
-    // Small wiggles (±15 units per leg) — no swing passes the 40-unit
-    // hysteresis, so nothing accumulates.
-    CHECK(feed_shake(core, 1, 60, 15.0, 0.02).empty());
+    DetectionCore core(params_for(4.0, 1.0, 2.0));
+    // ±30-unit wiggles for over a second: the factor is huge, but the
+    // trail never leaves a box smaller than the 100-unit minimum extent.
+    CHECK(feed_shake(core, 1, 60, 30.0, 0.02).empty());
     CHECK(core.state() == DetectionState::Idle);
 }
 
 TEST_CASE("US1-2: sustained oscillation triggers; cooldown then gates")
 {
-    DetectionCore core(params_for(40.0, 0.25, 2.0));
+    DetectionCore core(params_for(4.0, 1.0, 2.0));
 
-    // 1 s of vigorous shaking (per leg 0.02 s): the 3-swing window
-    // completes in ~0.1 s; after the trigger the 2 s cooldown gates
-    // anything else inside this batch.
-    auto first = feed_shake(core, 10, 50, 120.0, 0.02);
+    // Vigorous shaking (±200 units, 40 ms per leg): ~5 legs push the
+    // path past 4× the extent; then the 2 s cooldown gates the rest.
+    auto first = feed_shake(core, 10, 25, 200.0, 0.04);
     REQUIRE(first.size() == 1);
+    CHECK(first[0] - 10 * kUsecPerSec < 400'000);
 
     // Keep shaking before the cooldown expires: nothing new (G-1/G-3).
-    auto during = feed_shake(core, 11, 40, 120.0, 0.02);
-    CHECK(during.empty());
+    CHECK(feed_shake(core, 11, 20, 200.0, 0.04).empty());
 
-    // After the cooldown elapses (10.07 + 2 = 12.07), an oscillation
-    // triggers again.
-    auto after = feed_shake(core, 12.6, 50, 120.0, 0.02);
-    CHECK(after.size() == 1);
+    // After the cooldown elapses, an oscillation triggers again.
+    CHECK(feed_shake(core, 12.6, 25, 200.0, 0.04).size() == 1);
 }
 
 TEST_CASE("G-1 / FR-009: triggers are cooldown-spaced, never denser")
 {
-    DetectionCore core(params_for(40.0, 0.25, 5.0));
-    // Continuous vigorous shaking for 8 s with a 5 s cooldown: the second
-    // trigger is at least a full cooldown after the first.
-    auto times = feed_shake(core, 0, 400, 120.0, 0.02);
-    REQUIRE(!times.empty());
-    if (times.size() >= 2) {
-        CHECK(times[1] - times[0] >= 4'990'000);
+    DetectionCore core(params_for(4.0, 1.0, 5.0));
+    auto times = feed_shake(core, 0, 200, 200.0, 0.04);
+    REQUIRE(times.size() >= 2);
+    for (size_t i = 1; i < times.size(); ++i) {
+        CHECK(times[i] - times[i - 1] >= 4'990'000);
     }
 }
 
 TEST_CASE("US2-2: cooldown timeline — inside suppressed, after allowed")
 {
-    DetectionCore core(params_for(40.0, 0.25, 3.0));
+    DetectionCore core(params_for(4.0, 1.0, 3.0));
 
-    CHECK(feed_shake(core, 0, 40, 120.0, 0.02).size() == 1);
-    // 1 s later: inside the 3 s cooldown → nothing.
-    CHECK(feed_shake(core, 1.05, 40, 120.0, 0.02).empty());
-    // 3.5 s in: cooldown over → exactly one trigger accepted.
-    CHECK(feed_shake(core, 3.55, 40, 120.0, 0.02).size() == 1);
-    // Immediately afterwards: inside the fresh cooldown window.
-    CHECK(feed_shake(core, 4.0, 40, 120.0, 0.02).empty());
+    CHECK(feed_shake(core, 0, 20, 200.0, 0.04).size() == 1);
+    CHECK(feed_shake(core, 1.05, 20, 200.0, 0.04).empty());
+    CHECK(feed_shake(core, 3.55, 20, 200.0, 0.04).size() == 1);
+    CHECK(feed_shake(core, 4.5, 20, 200.0, 0.04).empty());
 }
 
 TEST_CASE("cooldown = 0.0 disables suppression")
 {
-    DetectionCore core(params_for(40.0, 0.25, 0.0));
-
-    // Continuous vigorous shaking for ~1.6 s with zero cooldown: several
-    // triggers fire, never denser than a fresh 3-swing window.
-    auto times = feed_shake(core, 0, 80, 120.0, 0.02);
+    DetectionCore core(params_for(4.0, 1.0, 0.0));
+    // Each trigger consumes the trail, so the next needs a fresh ~5 legs.
+    auto times = feed_shake(core, 0, 60, 200.0, 0.04);
     REQUIRE(times.size() >= 2);
     for (size_t i = 1; i < times.size(); ++i) {
-        CHECK(times[i] - times[i - 1] >= 50'000); // ≥ ~3 swings minus ε
+        CHECK(times[i] - times[i - 1] >= 120'000);
     }
 }
 
 TEST_CASE("US2-1: same motion, sensitivity decides the outcome")
 {
-    // Legs of 120 units each: under the default 40-unit sensitivity this
-    // easily completes 3 swings inside the window.
-    DetectionCore strict(params_for(40.0, 0.25, 2.0));
-    CHECK(feed_shake(strict, 0, 40, 120.0, 0.02).size() == 1);
+    // 25 legs of 40 ms = 1 s window holds at most ~25 legs → factor ≤ ~25.
+    DetectionCore normal(params_for(4.0, 1.0, 2.0));
+    CHECK(feed_shake(normal, 0, 25, 200.0, 0.04).size() == 1);
 
-    // Identical motion under a stricter (100-unit) sensitivity with
-    // 60-unit legs: each swing leg never reaches the 100-unit hysteresis
-    // → no flips at all → silent (tuning direction preserved with the
-    // units change).
-    DetectionCore strictest(params_for(100.0, 0.25, 2.0));
-    CHECK(feed_shake(strictest, 0, 40, 60.0, 0.02).empty());
+    DetectionCore strictest(params_for(40.0, 1.0, 2.0));
+    CHECK(feed_shake(strictest, 0, 25, 200.0, 0.04).empty());
 }
 
 TEST_CASE("US2-3 / G-2: oscillation slower than the duration window never triggers")
 {
-    DetectionCore core(params_for(40.0, 0.25, 2.0));
-    // Swing legs of 0.4 s: flips land every ~370 ms (40-unit retrace
-    // ends a leg early), so even three swings span ≈ 1.1 s — always
-    // beyond the 0.25 s window → nothing triggers (the state may sit in
-    // SUSTAIN while a futile window is open; that is presentation, not a
-    // trigger).
-    CHECK(feed_shake(core, 0, 20, 120.0, 0.4).empty());
+    // 0.4 s legs: a 1 s window holds ~2.5 legs → factor ≤ ~2.5.
+    DetectionCore core(params_for(4.0, 1.0, 2.0));
+    CHECK(feed_shake(core, 0, 20, 300.0, 0.4).empty());
+}
+
+TEST_CASE("slow big-amplitude sweep never triggers")
+{
+    // User-validated complaint (v2): slow side-to-side movement with big
+    // amplitude must stay silent.
+    DetectionCore core(params_for(4.0, 1.0, 2.0));
+    CHECK(feed_shake(core, 0, 16, 1500.0, 0.5).empty());
 }
 
 TEST_CASE("US2-4: straight fast movement (no reversal) never triggers")
 {
-    DetectionCore core(params_for(40.0, 0.25, 2.0));
-    // Sustained one-way fast drag: at most one direction change, and the
-    // window never completes 3 swings.
-    int64_t t = 0;
-    int64_t t_sec = 0;
-    (void)t;
+    DetectionCore core(params_for(4.0, 1.0, 2.0));
     int64_t t_usec = 0;
-    for (int i = 0; i < 1000; ++i) {
-        t_usec += 2'000;
-        (void)core.feed(Sample{t_usec, 30.0, 0.0}); // 30 units/sample, one way
-    }
-    (void)t_sec;
+    CHECK_FALSE(feed_stroke(core, t_usec, 1000, 30.0, 0.0));
     CHECK(core.state() == DetectionState::Idle);
+}
+
+TEST_CASE("false positive: overshoot-and-correct pointing never triggers")
+{
+    // Aim at a target, overshoot, correct, overshoot slightly, settle —
+    // the v2 counter saw 3 swings here.
+    DetectionCore core(params_for(4.0, 1.0, 2.0));
+    int64_t t_usec = 0;
+    bool fired = feed_stroke(core, t_usec, 40, 20.0, 3.0); // 800 right
+    fired = feed_stroke(core, t_usec, 15, -6.0, 0.0) || fired; // back 90
+    fired = feed_stroke(core, t_usec, 10, 5.0, 0.0) || fired;  // fwd 50
+    fired = feed_stroke(core, t_usec, 10, -4.0, 0.0) || fired; // back 40
+    CHECK_FALSE(fired);
+}
+
+TEST_CASE("false positive: zig-zag while travelling never triggers")
+{
+    // Fast vertical wiggle while moving right (scribbling, wavy travel):
+    // per-axis swing counting fired on the Y axis; the trail's extent
+    // grows with the travel, so the factor stays ≈ 1.4.
+    DetectionCore core(params_for(4.0, 1.0, 2.0));
+    int64_t t_usec = 0;
+    bool fired = false;
+    for (int leg = 0; leg < 30; ++leg) {
+        const double dy = (leg % 2 == 0) ? 10.0 : -10.0;
+        fired = feed_stroke(core, t_usec, 15, 10.0, dy) || fired;
+    }
+    CHECK_FALSE(fired);
+}
+
+TEST_CASE("false positive: one fast circle never triggers")
+{
+    // A circle's perimeter is ~2.2× its bounding diagonal.
+    DetectionCore core(params_for(4.0, 1.0, 2.0));
+    int64_t t_usec = 0;
+    bool fired = false;
+    constexpr int kSteps = 200;
+    constexpr double kRadius = 200.0;
+    constexpr double kPi = 3.14159265358979323846;
+    for (int i = 0; i < kSteps; ++i) {
+        const double a = 2.0 * kPi * i / kSteps;
+        const double step = 2.0 * kPi * kRadius / kSteps;
+        fired = feed_stroke(core, t_usec, 1, -std::sin(a) * step,
+                            std::cos(a) * step)
+                || fired;
+    }
+    CHECK_FALSE(fired);
+}
+
+TEST_CASE("reset() (button held / drag) discards the trail")
+{
+    DetectionCore core(params_for(4.0, 1.0, 2.0));
+    // Four legs: just short of a shake.
+    CHECK(feed_shake(core, 0, 4, 200.0, 0.04).empty());
+    core.reset();
+    CHECK(core.segments() == 0);
+    // Two more legs would have completed it; after the reset they don't.
+    CHECK(feed_shake(core, 0.17, 2, 200.0, 0.04).empty());
 }
 
 TEST_CASE("non-monotonic timestamps are dropped without corrupting state")
 {
-    DetectionCore core(params_for(40.0, 0.4, 2.0));
+    DetectionCore core(params_for(4.0, 1.0, 2.0));
 
-    // First: a cleanly triggered shake.
-    auto before = feed_shake(core, 0, 60, 120.0, 0.02);
+    auto before = feed_shake(core, 0, 20, 200.0, 0.04);
     REQUIRE(before.size() == 1);
 
-    // Samples going backwards in time: ignored entirely, no side effect.
     const DetectionResult r = core.feed(Sample{0, 999.0, 0.0});
     CHECK(r.triggered == false);
 
-    // State is preserved (this oscillation is inside the 2 s cooldown):
-    CHECK(feed_shake(core, 0.1, 60, 120.0, 0.02).empty());
-
-    // After the pre-regression cooldown elapses: fresh trigger, once.
-    CHECK(feed_shake(core, 2.6, 60, 120.0, 0.02).size() == 1);
+    // Still inside the 2 s cooldown.
+    CHECK(feed_shake(core, 0.9, 20, 200.0, 0.04).empty());
+    // After the cooldown: fresh trigger, once.
+    CHECK(feed_shake(core, 2.6, 20, 200.0, 0.04).size() == 1);
 }
 
 TEST_CASE("duplicate timestamp sample is not fatal")
 {
-    DetectionCore core(params_for(40.0, 0.25, 0.0));
+    DetectionCore core(params_for(4.0, 1.0, 0.0));
     const Sample same_time{1'000'000, 50.0, 0.0};
     (void)core.feed(same_time);
     (void)core.feed(same_time); // dt would be 0 — must not divide by zero
-    // Core remains functional afterwards.
-    (void)feed_shake(core, 1.01, 40, 120.0, 0.02);
+    CHECK(feed_shake(core, 1.01, 20, 200.0, 0.04).size() >= 1);
 }
 
-TEST_CASE("slow big-amplitude sweep never triggers (cadence gate)")
+TEST_CASE("1 kHz sign jitter never overflows the fixed trail")
 {
-    // User-validated complaint: slow side-to-side movement with big
-    // amplitude must stay silent. Legs of 0.5 s at ±1500 units: each leg
-    // is far slower than the 350 ms cadence cap, so its flips are
-    // rejected and never accumulate into a window.
-    DetectionCore core(params_for(40.0, 0.25, 2.0));
-    CHECK(feed_shake(core, 0, 16, 1500.0, 0.5).empty());
-    CHECK(core.state() == DetectionState::Idle);
-}
-
-TEST_CASE("oversized fast travel never triggers (travel gate)")
-{
-    // Full-screen flicks: ±3000-unit legs fast enough to pass the cadence
-    // cap, but far over the 2000-unit travel cap → cursor travel, not
-    // shaking.
-    DetectionCore core(params_for(40.0, 0.25, 2.0));
-    CHECK(feed_shake(core, 0, 60, 3000.0, 0.03).empty());
-    CHECK(core.state() == DetectionState::Idle);
-}
-
-TEST_CASE("fast small shakes still trigger under the travel/cadence gates")
-{
-    // No regression: ±60-unit legs at 30 ms — well inside both gates.
-    DetectionCore core(params_for(40.0, 0.25, 2.0));
-    auto times = feed_shake(core, 0, 40, 60.0, 0.03);
-    CHECK(times.size() == 1);
+    // Every sample reverses: the ring (128 vertices) wraps many times.
+    DetectionCore core(params_for(4.0, 1.0, 2.0));
+    int64_t t_usec = 0;
+    for (int i = 0; i < 5000; ++i) {
+        t_usec += 1'000;
+        (void)core.feed(Sample{t_usec, (i % 2 == 0) ? 5.0 : -5.0, 0.0});
+    }
+    CHECK(core.segments() <= 128);
 }
 
 TEST_CASE("trigger result carries timestamp, peak, and single-shot semantics")
 {
-    DetectionCore core(params_for(40.0, 0.25, 2.0));
-    int64_t trigger_time = -1;
-    double peak = -1.0;
-    for (int i = 0; i < 500; ++i) {
-        const int64_t t = static_cast<int64_t>(
-            (0.05 + static_cast<double>(i) * 0.002) * static_cast<double>(kUsecPerSec));
-        // oscillate 120 units per leg, 2 ms per leg-sample (10 ms/leg)
-        const double dir = (i % 20 < 10) ? +1.0 : -1.0;
-        const DetectionResult r = core.feed(Sample{t, 12.0 * dir, 0.0});
-        if (r.triggered) {
-            trigger_time = r.at_usec;
-            peak = r.peak_speed;
-            break;
-        }
-    }
-
-    REQUIRE(trigger_time > 0);
-    CHECK(peak > 0.0);
-    // Exactly one trigger across the run (cooldown window is 2 s).
-    int total = 0;
-    for (int i = 0; i < 100; ++i) {
-        const DetectionResult r =
-            core.feed(Sample{trigger_time + static_cast<int64_t>((i + 1) * 2000), 12.0, 0.0});
-        if (r.triggered) total += 1;
-    }
-    CHECK(total == 0);
+    DetectionCore core(params_for(4.0, 1.0, 2.0));
+    auto times = feed_shake(core, 0.05, 20, 200.0, 0.04);
+    REQUIRE(times.size() == 1);
+    CHECK(times[0] > 50'000);
+    CHECK(core.state() == DetectionState::Cooldown);
 }
 
 TEST_CASE("user-reported Surface trace now triggers (v2 regression)")
@@ -266,7 +277,7 @@ TEST_CASE("user-reported Surface trace now triggers (v2 regression)")
     // units/s on a Surface — reproduced here as the equivalent pointer
     // displacement sequence (velocity samples reversed per swing, dt 7 ms).
     // Recorded from the bug report: "shaking as hard as I want".
-    DetectionCore core(params_for(40.0, 0.25, 2.0));
+    DetectionCore core(params_for(4.0, 1.0, 2.0));
 
     // Reconstruct: speeds reported, ~0.007 s per sample; sign alternates on
     // the local extremes of the reported sequence (offsets between peaks).

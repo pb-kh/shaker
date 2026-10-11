@@ -144,6 +144,8 @@ struct Pipeline {
     bool debug = false;
     int64_t last_sample_t_usec = -1;
     int64_t reference_t_usec = -1;
+    int buttons_held = 0; // seat-wide pressed pointer buttons
+    shaker::UniqueFd running_command; // pidfd of the last spawned command
 };
 
 void handle_device_event(Pipeline& pipeline, libinput_event* ev)
@@ -178,6 +180,12 @@ void handle_device_event(Pipeline& pipeline, libinput_event* ev)
         }
         pipeline.last_sample_t_usec = t_usec;
 
+        if (pipeline.buttons_held > 0) {
+            // Dragging (text selection, window moves) is never a shake.
+            pipeline.core.reset();
+            break;
+        }
+
         const shaker::DetectionResult result =
             pipeline.core.feed(shaker::Sample{t_usec, dx, dy});
 
@@ -189,9 +197,11 @@ void handle_device_event(Pipeline& pipeline, libinput_event* ev)
             }
             const double elapsed =
                 static_cast<double>(t_usec - pipeline.reference_t_usec) / 1e6;
-            std::fprintf(stderr, "debug: t=+%.3fs speed=%.0f swings=%d state=%s\n",
+            std::fprintf(stderr,
+                         "debug: t=+%.3fs speed=%.0f segments=%zu factor=%.2f "
+                         "state=%s\n",
                          elapsed, pipeline.core.last_speed(),
-                         pipeline.core.swings(),
+                         pipeline.core.segments(), pipeline.core.shake_factor(),
                          shaker::state_name(pipeline.core.state()).data());
             if (pipeline.core.state() == shaker::DetectionState::Sustaining) {
                 std::fprintf(stderr, "debug: window=+%.3fs\n",
@@ -207,6 +217,15 @@ void handle_device_event(Pipeline& pipeline, libinput_event* ev)
                                  / 1e6,
                              result.peak_speed);
             }
+            if (shaker::command_running(pipeline.running_command)) {
+                // Never stack a second instance on top of a still-running
+                // one (e.g. a region picker that is still open).
+                std::printf("shake! speed=%.0f units/s → skipped: previous "
+                            "command still running\n",
+                            result.peak_speed);
+                std::fflush(stdout);
+                break;
+            }
             std::printf("shake! speed=%.0f units/s → running: %s\n",
                         result.peak_speed,
                         [&] {
@@ -221,12 +240,23 @@ void handle_device_event(Pipeline& pipeline, libinput_event* ev)
                         }()
                             .c_str());
             std::fflush(stdout);
-            shaker::spawn_detached_shell_command(pipeline.command);
+            pipeline.running_command =
+                shaker::spawn_detached_shell_command(pipeline.command);
+        }
+        break;
+    }
+    case LIBINPUT_EVENT_POINTER_BUTTON: {
+        auto* pointer = libinput_event_get_pointer_event(ev);
+        if (libinput_event_pointer_get_button_state(pointer)
+            == LIBINPUT_BUTTON_STATE_PRESSED) {
+            ++pipeline.buttons_held;
+        } else if (pipeline.buttons_held > 0) {
+            --pipeline.buttons_held;
         }
         break;
     }
     default:
-        // Keyboard, buttons, axis, touch, gestures … are not shake inputs;
+        // Keyboard, axis, touch, gestures … are not shake inputs;
         // every pointer-capable device is covered by the seat model
         // (FR-015) and consumption is silent (contract §2.1).
         break;
@@ -330,6 +360,7 @@ int run(const bool debug)
         .core = shaker::DetectionCore{shaker::to_detection_params(config)},
         .command = config.command,
         .debug = debug,
+        .running_command = {},
     };
 
     UdevCtx udev;
