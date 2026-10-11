@@ -1,0 +1,6 @@
+option(
+  'udev_rules_dir',
+  type: 'string',
+  value: '/etc/udev/rules.d',
+  description: 'Directory the shaker udev rule is installed into (absolute path; /usr/lib/udev/rules.d for package-managed installs)',
+)

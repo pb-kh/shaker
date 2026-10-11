@@ -68,6 +68,12 @@ executable(
   install: true,
 )
 
+# Grants read access to mouse event devices (see udev/ and README).
+install_data(
+  'udev/99-shaker-mouse-access.rules',
+  install_dir: get_option('udev_rules_dir'),
+)
+
 summary(
   {
     'libinput': libinput_dep.version(),

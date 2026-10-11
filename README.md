@@ -26,6 +26,10 @@ meson compile -C build
 meson test -C build
 ```
 
+`meson install` also installs the udev rule `99-shaker-mouse-access.rules`
+(mouse event devices get mode `0600`) into `/etc/udev/rules.d`. Override the
+destination with `-Dudev_rules_dir=/usr/lib/udev/rules.d` at setup time.
+
 ## Running
 
 ```sh
