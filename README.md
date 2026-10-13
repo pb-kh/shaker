@@ -27,8 +27,9 @@ meson test -C build
 ```
 
 `meson install` also installs the udev rule `99-shaker-mouse-access.rules`
-(mouse event devices get mode `0600`) into `/etc/udev/rules.d`. Override the
-destination with `-Dudev_rules_dir=/usr/lib/udev/rules.d` at setup time.
+(mouse event devices get mode `0660` `root:input`, so users in the `input`
+group can read them) into `/etc/udev/rules.d`. Override the destination
+with `-Dudev_rules_dir=/usr/lib/udev/rules.d` at setup time.
 
 ## Running
 
@@ -63,9 +64,39 @@ duration = 1.0
 # How long (seconds) to ignore shakes after one triggers.
 cooldown = 2.0
 
+# Optional: only watch devices whose name or sysname contains this string
+# (case-insensitive). Leave it out to watch every pointer device. Run
+# `shaker --list-devices` to see what is available.
+# device = "Touchpad"
+
 # Executed through /bin/sh -c when a shake triggers (required key).
 command = "notify-send 'Shake detected'"
 ```
+
+By default shaker watches **every** pointer-capable device on the seat, so
+shaking a mouse, a touchpad or a stylus all work. To restrict it to one
+device (say, only your mouse and not the touchpad), set `device` to a
+substring of the device's libinput name or `/dev/input/eventN` sysname:
+
+```toml
+device = "Logitech"     # matches "Logitech USB Receiver Mouse"
+# device = "event19"    # ...or pin the exact sysname
+```
+
+Find the names with:
+
+```sh
+$ shaker --list-devices
+[*] Microsoft Surface 045E:09AE (event17)
+[*] Microsoft Surface 045E:09AF Touchpad (event19)
+
+2 pointer-capable device(s) on seat0
+```
+
+`[*]` marks the devices shaker would watch; the same flag accepts a filter
+to preview a choice (`shaker --list-devices --device touchpad`) and
+`--device NAME` / `-d NAME` on the daemon overrides the config key for a
+single run.
 
 A shake is recognized the way KDE Plasma's *Shake Cursor* and PowerToys'
 *Find My Mouse* do it: within the last `duration` seconds, the pointer's

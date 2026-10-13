@@ -45,13 +45,15 @@ Examples:
 
 ## 2. File format and keys
 
-Flat TOML document with four recognized top-level scalar keys:
+Flat TOML document with five recognized top-level scalar keys (four in the
+original v0.1 contract; `device` is an additive v0.2 amendment):
 
 | Key | TOML type | Unit | Default (when omitted) | Constraint |
 |-----|-----------|------|------------------------|------------|
 | `sensitivity` | float (int accepted) | shake factor (path / trail diagonal) | `4.0` | > 0.0 (warning above 20) |
 | `duration`    | float (int accepted) | seconds | `1.0` | > 0.0 |
 | `cooldown`    | float (int accepted) | seconds | `2.0` | ≥ 0.0 |
+| `device`      | string  | device name / sysname substring | `""` (empty = every pointer device on seat0) | matched case-insensitively as a substring of the libinput device **name** or **sysname** |
 | `command`     | string  | shell command | **none — required** | non-empty after parse; executed via `/bin/sh -c` |
 
 - Unknown top-level keys are **ignored** with a stderr warning line (does not
@@ -79,6 +81,10 @@ duration = 1.0
 
 # How long (seconds) to ignore further shakes after one triggers.
 cooldown = 2.0
+
+# Optional: only watch devices whose name or sysname contains this string
+# (case-insensitive). Omit for all pointer devices on the seat.
+# device = "Logitech"
 
 # Run through /bin/sh -c when a shake triggers.
 command = "notify-send 'Shake detected'"
@@ -114,11 +120,11 @@ the resolved file path, and the daemon exits **without monitoring devices**
 | 7 | wrong TOML type for a known key (e.g. `duracion = "fast"`) | `shaker: config '<path>': key "<key>" has wrong type: expected <type>, got <name>` |
 
 Rule 3 makes `command` the only key whose omission is fatal — the three
-numeric keys have documented defaults and never fail by omission. This
-matches the spec: FR-012 (defaults for omitted settings) applies to
-sensitivity/duration/cooldown; the spec's Key Entities section explicitly
-gives `command` no safe default, so its omission is treated as an invalid
-configuration (FR-010 path).
+numeric keys and the optional string key `device` have documented defaults
+and never fail by omission. This matches the spec: FR-012 (defaults for
+omitted settings) applies to sensitivity/duration/cooldown; the spec's Key
+Entities section explicitly gives `command` no safe default, so its omission
+is treated as an invalid configuration (FR-010 path).
 
 ## 4. Semantics of each key (contract meaning)
 
@@ -137,6 +143,15 @@ configuration (FR-010 path).
 - **cooldown**: after a shake triggers, further shakes are ignored for
   this many seconds. `0.0` disables suppression. It applies in device
   event time.
+- **device** (optional, additive v0.2 amendment): restricts detection to
+  pointer devices whose libinput **name** or **sysname** contains the given
+  string, compared case-insensitively. Matching is a plain substring test,
+  so `"Surface"` matches `Microsoft Surface 045E:09AF Touchpad` and
+  `"event19"` matches the sysname. Omitted or empty means *every*
+  pointer-capable device on seat0 is watched (FR-015 default behavior). Use
+  `shaker --list-devices` to see the exact names/sysnames. The filter only
+  gates which devices feed the detector; button state is still tracked
+  seat-wide, so dragging on any device still suppresses detection.
 - **command**: a **full shell script** executed by `/bin/sh -c` with cwd
   and environment inherited from the daemon (otter-launcher-style
   `exec_cmd = "sh -c"` semantics: pipes, subshells, `;`-sequences,

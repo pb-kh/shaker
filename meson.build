@@ -69,6 +69,7 @@ core_sources = [
   'src/detection.cpp',
   'src/config.cpp',
   'src/exec_command.cpp',
+  'src/instance_lock.cpp',
 ]
 
 shaker_core = static_library(
@@ -109,6 +110,7 @@ if doctest_found
   foreach test_case : [
     {'name': 'test_detection', 'sources': ['tests/test_detection.cpp']},
     {'name': 'test_config', 'sources': ['tests/test_config.cpp']},
+    {'name': 'test_instance_lock', 'sources': ['tests/test_instance_lock.cpp']},
   ]
     exe = executable(
       test_case['name'],

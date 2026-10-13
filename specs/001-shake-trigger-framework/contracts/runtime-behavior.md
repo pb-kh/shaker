@@ -17,15 +17,29 @@ resource-behavior guarantees.
 $ shaker [FLAGS]
 
 Flags:
-  --debug      verbose detection trace on stderr (calibration mode)
-  --help       print usage (stdout) and exit 0
-  --version    print version (stdout) and exit 0
+  --debug              verbose detection trace on stderr (calibration mode)
+  --device NAME, -d    only watch devices matching NAME (name/sysname
+                       substring, case-insensitive); overrides the config key
+  --list-devices, -l   print pointer devices on seat0 and exit 0
+  --help               print usage (stdout) and exit 0
+  --version            print version (stdout) and exit 0
 ```
 
 - Unknown flags: usage-error — `shaker: unrecognized flag '<flag>'` on
   stderr, usage line follows, **exit 2**.
 - With no flags the daemon starts normally (configuration rules from
   `config-schema.md`).
+- `--device NAME` and `--device=NAME` are both accepted; the CLI value wins
+  over the `device` config key. `--list-devices` prints one line per
+  pointer-capable device as `<marker> <name> (<sysname>)`, where `[*]`
+  marks devices that match the active filter (`[ ]` otherwise), then the
+  device count, and exits 0. It does not start the daemon.
+- Single instance: a daemon takes an `flock(2)` on `$XDG_RUNTIME_DIR/shaker.pid`
+  (fallback `/tmp/shaker-<uid>.pid`) and writes its PID there. A second start
+  fails with `shaker: another shaker instance is already running (pid <pid>)`
+  on stderr and exit 1, before any device is opened. The kernel drops the lock
+  on exit, and `XDG_RUNTIME_DIR` is cleared at logout, so a stale file never
+  blocks a start. `--list-devices` does not take the lock.
 
 ## 2. Output channels (constitution VI)
 
@@ -35,8 +49,8 @@ Human-readable one-line events, flushed immediately:
 
 | Event | Line format |
 |-------|-------------|
-| start | `shaker <version>: watching seat0 — pid <pid>` |
-| device added | `[+] device added: <name> (<sysname>)` |
+| start | `shaker <version>: watching seat0 — pid <pid>` (with a device filter: `shaker <version>: watching seat0 (device filter: <filter>) — pid <pid>`) |
+| device added | `[+] device added: <name> (<sysname>)` (with a device filter: `[+] device added: <name> (<sysname>) — matches filter` / `— not in filter`) |
 | device removed | `[-] device removed: <name>` |
 | shake triggered | `shake! speed=<speed> units/s → running: <command>` (speed = instantaneous pointer speed; multi-line scripts show their first line + `…`) |
 | shake while previous command still running | `shake! speed=<speed> units/s → skipped: previous command still running` |
@@ -71,10 +85,16 @@ errors).
 
 ## 4. Device handling (FR-013, FR-014, FR-015)
 
-- **FR-015**: every pointer-capable device libinput exposes on seat0 is
-  monitored automatically; no device naming appears in the config. Device
-  add/remove produce stdout lines. libinput **gesture** or keyboard-only
-  devices are ignored for detection.
+- **FR-015**: by default every pointer-capable device libinput exposes on
+  seat0 is monitored automatically; no device naming is required in the
+  config. Device add/remove produce stdout lines. libinput **gesture** or
+  keyboard-only devices are ignored for detection.
+- **FR-015 amendment (v0.2)**: the optional `device` config key (or the
+  `--device` CLI flag) narrows detection to devices whose name/sysname
+  contains the given substring. This is additive — an empty filter keeps the
+  FR-015 "watch everything" behavior. Devices outside the filter still emit
+  their `device added`/`device removed` stdout lines (annotated), but their
+  pointer motion is ignored. Use `shaker --list-devices` to discover names.
 - **FR-013**: on device removal the daemon keeps running (stdout line only);
   the detection state machine is *not* reset — sustained windows only
   exist while samples flow, so a removed device cannot hold a stale window.

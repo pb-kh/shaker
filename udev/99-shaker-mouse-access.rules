@@ -1,1 +1,4 @@
-SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", MODE="0600"
+# Input-group users get read access to mouse event devices (the kernel's
+# input class defaults to 0660 root:input; this rule makes that explicit so
+# the granted access doesn't depend on distro defaults that may differ).
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", GROUP="input", MODE="0660"

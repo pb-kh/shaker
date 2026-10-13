@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install build dependencies
         run: |
@@ -41,7 +41,7 @@ jobs:
           cp udev/99-shaker-mouse-access.rules dist/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: shaker-linux-x86_64
           path: dist/
@@ -53,7 +53,7 @@ jobs:
       image: fedora:latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install build tools
         run: |
@@ -90,7 +90,7 @@ jobs:
           cp "$MAIN_RPM" dist/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: shaker-rpm
           path: dist/*.rpm
@@ -104,7 +104,7 @@ jobs:
       contents: write
     steps:
       - name: Download built files
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: shaker-*
           merge-multiple: true
@@ -153,8 +153,10 @@ jobs:
           sudo udevadm trigger --subsystem-match=input
           ```
 
-          No reboot needed. If your user is already in the `input` group,
-          the rule is redundant — you may skip it.
+          No reboot needed. The rule gives `input`-group users read access to
+          mouse event devices (`/dev/input/event*` for mice). Add your user
+          to the group (`sudo gpasswd -a $USER input`) and **log out and
+          back in** — group membership applies only to fresh sessions.
 
           ### Run it
 

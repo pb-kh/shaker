@@ -57,6 +57,35 @@ TEST_CASE("US1: full config parses all four keys with the documented values")
     CHECK(params.cooldown_usec == 2'000'000);
 }
 
+TEST_CASE("optional `device` key is parsed and defaults to empty (watch all)")
+{
+    // Omitted → empty filter, meaning "all pointer devices on seat0".
+    const auto plain = shaker::parse_config("/tmp/x.toml",
+                                            std::string(kMinimalConfig), nullptr);
+    REQUIRE(plain.has_value());
+    CHECK(plain->device.empty());
+
+    // Present → carried through verbatim (literal and basic strings).
+    const auto named = shaker::parse_config(
+        "/tmp/x.toml",
+        "device = 'Microsoft Surface'\ncommand = \"echo hi\"\n", nullptr);
+    REQUIRE(named.has_value());
+    CHECK(named->device == "Microsoft Surface");
+
+    const auto sysname = shaker::parse_config(
+        "/tmp/x.toml", "device = \"event19\"\ncommand = \"true\"\n", nullptr);
+    REQUIRE(sysname.has_value());
+    CHECK(sysname->device == "event19");
+}
+
+TEST_CASE("`device` with a non-string value is a wrong-type error")
+{
+    auto parse = shaker::parse_config("/tmp/x.toml", "device = 42\n", nullptr);
+    REQUIRE(!parse.has_value());
+    CHECK(parse.error().detail.find("key \"device\" has wrong type")
+          != std::string::npos);
+}
+
 TEST_CASE("US3-3 / SC-003: omitted numeric keys fall back to documented defaults")
 {
     const auto parse = shaker::parse_config("/tmp/x.toml",

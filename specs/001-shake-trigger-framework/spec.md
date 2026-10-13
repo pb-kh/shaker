@@ -177,6 +177,9 @@ error messages, default substitutions, and a clean exit in the failing cases.
 - **FR-015**: The daemon MUST monitor every connected device capable of
   reporting the motion data the shake detector needs, rather than a single
   user-designated device.
+  *Amendment (v0.2)*: an optional `device` setting (name/sysname substring)
+  MAY narrow monitoring to a chosen subset; when unset the daemon MUST keep
+  the FR-015 "monitor every capable device" behavior.
 - **FR-016**: The daemon MUST continue watching for motion while the
   configured command is executing.
 - **FR-017**: The daemon MUST respond to a user request to terminate (e.g.,

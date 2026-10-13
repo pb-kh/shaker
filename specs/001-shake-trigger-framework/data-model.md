@@ -111,9 +111,10 @@ at startup; converted to `DetectionParams` + `command` afterwards.
 
 | Field | Type | TOML key | Constraint | Default on omission |
 |-------|------|----------|------------|---------------------|
-| `sensitivity` | `double` | `sensitivity` | > 0 | 8000.0 |
+| `sensitivity` | `double` | `sensitivity` | > 0 | 4.0 |
 | `duration` | `double` | `duration` | > 0 | 1.0 |
 | `cooldown` | `double` | `cooldown` | ≥ 0 | 2.0 |
+| `device` | `string` | `device` | optional; substring of device name/sysname, case-insensitive | `""` (all pointer devices) |
 | `command` | `string` | `command` | non-empty; free text executed by the shell | **none — missing → error + exit** |
 
 Key relationships / invariants:

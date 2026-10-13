@@ -17,12 +17,14 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <cctype>
 #include <string_view>
 
 #include <shaker/config.hpp>
 #include <shaker/detection.hpp>
 #include <shaker/exec_command.hpp>
 #include <shaker/fd.hpp>
+#include <shaker/instance_lock.hpp>
 #include <shaker/version.hpp>
 
 #include <string>
@@ -93,15 +95,20 @@ constexpr std::string_view kUsageText =
     "\n"
     "Flags:\n"
     "  --debug      verbose detection trace on stderr (calibration mode)\n"
+    "  --device,-d  only watch devices matching this name/sysname substring\n"
+    "  --list-devices,-l list detected pointer devices and exit\n"
     "  --help       print this usage and exit 0\n"
     "  --version    print version and exit 0\n"
     "\n"
-    "Configured entirely from:\n"
+    "Configured from:\n"
     "  $XDG_CONFIG_HOME/shaker/config.toml\n"
-    "  (defaults to ~/.config/shaker/config.toml)\n";
+    "  (defaults to ~/.config/shaker/config.toml)\n"
+    "  Also accepts 'device' key in config; CLI --device overrides config.\n";
 
 struct Options {
     bool debug = false;
+    bool list_devices = false;
+    std::string device_filter;
 };
 
 enum class ParseResult { Continue, StopExit };
@@ -127,9 +134,35 @@ ParseResult parse_args(const int argc, const char* const* argv, Options& options
             options.debug = true;
             continue;
         }
+        if (arg == "--device" || arg == "-d") {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "shaker: flag '%.*s' requires an argument\n",
+                             static_cast<int>(arg.size()), arg.data());
+                exit_code = 2;
+                return ParseResult::StopExit;
+            }
+            options.device_filter = argv[++i];
+            continue;
+        }
+        // also support --device=<value>
+        if (arg.starts_with("--device=")) {
+            const size_t eq = arg.find('=');
+            if (eq + 1 < arg.size()) {
+                options.device_filter = std::string(arg.substr(eq + 1));
+            } else {
+                std::fprintf(stderr, "shaker: flag '--device' requires an argument\n");
+                exit_code = 2;
+                return ParseResult::StopExit;
+            }
+            continue;
+        }
+        if (arg == "--list-devices" || arg == "-l") {
+            options.list_devices = true;
+            continue;
+        }
         std::fprintf(stderr, "shaker: unrecognized flag '%.*s'\n",
                      static_cast<int>(arg.size()), arg.data());
-        std::fprintf(stderr, "usage: shaker [--debug]\n");
+        std::fprintf(stderr, "usage: shaker [--debug] [--device NAME]\n");
         exit_code = 2;
         return ParseResult::StopExit;
     }
@@ -141,6 +174,7 @@ ParseResult parse_args(const int argc, const char* const* argv, Options& options
 struct Pipeline {
     shaker::DetectionCore core;
     std::string command;
+    std::string device_filter;
     bool debug = false;
     int64_t last_sample_t_usec = -1;
     int64_t reference_t_usec = -1;
@@ -148,14 +182,61 @@ struct Pipeline {
     shaker::UniqueFd running_command; // pidfd of the last spawned command
 };
 
+// Case-insensitive substring search: does `hay` contain `needle`?
+[[nodiscard]] bool contains_ci(std::string_view hay, std::string_view needle)
+{
+    if (needle.empty()) {
+        return true;
+    }
+    if (hay.size() < needle.size()) {
+        return false;
+    }
+    for (size_t i = 0; i + needle.size() <= hay.size(); ++i) {
+        bool eq = true;
+        for (size_t j = 0; j < needle.size(); ++j) {
+            const char a = static_cast<char>(
+                std::tolower(static_cast<unsigned char>(hay[i + j])));
+            const char b = static_cast<char>(
+                std::tolower(static_cast<unsigned char>(needle[j])));
+            if (a != b) {
+                eq = false;
+                break;
+            }
+        }
+        if (eq) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Does this device's name or sysname match the configured filter (if any)?
+[[nodiscard]] bool device_matches_filter(libinput_device* dev,
+                                         std::string_view filter)
+{
+    if (filter.empty()) {
+        return true;
+    }
+    return contains_ci(libinput_device_get_name(dev), filter)
+           || contains_ci(libinput_device_get_sysname(dev), filter);
+}
+
 void handle_device_event(Pipeline& pipeline, libinput_event* ev)
 {
     switch (libinput_event_get_type(ev)) {
     case LIBINPUT_EVENT_DEVICE_ADDED: {
         auto* dev = libinput_event_get_device(ev);
-        std::printf("[+] device added: %s (%s)\n",
-                    libinput_device_get_name(dev),
-                    libinput_device_get_sysname(dev));
+        const bool matches = device_matches_filter(dev, pipeline.device_filter);
+        if (pipeline.device_filter.empty()) {
+            std::printf("[+] device added: %s (%s)\n",
+                        libinput_device_get_name(dev),
+                        libinput_device_get_sysname(dev));
+        } else {
+            std::printf("[+] device added: %s (%s) — %s\n",
+                        libinput_device_get_name(dev),
+                        libinput_device_get_sysname(dev),
+                        matches ? "matches filter" : "not in filter");
+        }
         break;
     }
     case LIBINPUT_EVENT_DEVICE_REMOVED: {
@@ -164,6 +245,11 @@ void handle_device_event(Pipeline& pipeline, libinput_event* ev)
         break;
     }
     case LIBINPUT_EVENT_POINTER_MOTION: {
+        auto* dev = libinput_event_get_device(ev);
+        if (!device_matches_filter(dev, pipeline.device_filter)) {
+            // A device filter is configured and this device is not it.
+            break;
+        }
         auto* pointer = libinput_event_get_pointer_event(ev);
         const int64_t t_usec =
             static_cast<int64_t>(libinput_event_pointer_get_time_usec(pointer));
@@ -331,7 +417,78 @@ void handle_device_event(Pipeline& pipeline, libinput_event* ev)
     }
 }
 
-int run(const bool debug)
+// Print every pointer-capable device libinput exposes on seat0 and exit.
+// The filter argument (may be empty) marks which devices the daemon would
+// actually watch with the given `device` setting.
+[[nodiscard]] int list_devices(const std::string& filter)
+{
+    UdevCtx udev;
+    if (!udev) {
+        std::fprintf(stderr, "failed to create udev context: %s\n", std::strerror(errno));
+        return 1;
+    }
+
+    LibinputCtx li(libinput_udev_create_context(&device_interface, nullptr, udev.handle));
+    if (!li) {
+        std::fprintf(stderr, "failed to create libinput context: %s\n", std::strerror(errno));
+        return 1;
+    }
+    if (libinput_udev_assign_seat(li.handle, "seat0") != 0) {
+        std::fprintf(stderr, "failed to assign seat \"seat0\": %s\n", std::strerror(errno));
+        return 1;
+    }
+
+    if (!filter.empty()) {
+        std::printf("device filter: \"%s\" (case-insensitive substring of "
+                    "name or sysname)\n\n",
+                    filter.c_str());
+    }
+
+    int pointer_devices = 0;
+
+    // Device-added events are queued during assign_seat; dispatch until the
+    // queue drains (a short poll timeout catches the rest).
+    for (int round = 0; round < 50; ++round) {
+        if (libinput_dispatch(li.handle) != 0) {
+            break;
+        }
+        bool saw_event = false;
+        while (libinput_event* ev = libinput_get_event(li.handle)) {
+            saw_event = true;
+            if (libinput_event_get_type(ev) == LIBINPUT_EVENT_DEVICE_ADDED) {
+                auto* dev = libinput_event_get_device(ev);
+                const bool pointer =
+                    libinput_device_has_capability(dev, LIBINPUT_DEVICE_CAP_POINTER) != 0;
+                const bool gesture =
+                    libinput_device_has_capability(dev, LIBINPUT_DEVICE_CAP_GESTURE) != 0;
+                if (pointer || gesture) {
+                    ++pointer_devices;
+                    std::printf("%s %s (%s)\n",
+                                device_matches_filter(dev, filter) ? "[*]" : "[ ]",
+                                libinput_device_get_name(dev),
+                                libinput_device_get_sysname(dev));
+                }
+            }
+            libinput_event_destroy(ev);
+        }
+        if (!saw_event) {
+            // Give the udev backend a moment, then stop when still idle.
+            pollfd pfd{.fd = libinput_get_fd(li.handle), .events = POLLIN, .revents = 0};
+            if (::poll(&pfd, 1, 100) <= 0) {
+                break;
+            }
+        }
+    }
+
+    std::printf("\n%u pointer-capable device(s) on seat0\n",
+                static_cast<unsigned>(pointer_devices));
+    if (!filter.empty()) {
+        std::printf("[*] = would be watched with the current device filter\n");
+    }
+    return 0;
+}
+
+int run(const Options& options)
 {
     // Reserve the SIGHUP slot; spawned children are reaped automatically
     // (contracts/runtime-behavior.md §5).
@@ -356,10 +513,28 @@ int run(const bool debug)
         return *loaded;
     }();
 
+    std::string device_filter = config.device;
+    if (!options.device_filter.empty()) {
+        device_filter = options.device_filter;
+    }
+
+    if (options.list_devices) {
+        return list_devices(device_filter);
+    }
+
+    // Held until run() returns, so a second daemon fails here instead of
+    // detecting the same shake and spawning the command again.
+    const auto instance = shaker::acquire_instance_lock(shaker::pid_file_path());
+    if (!instance) {
+        std::fprintf(stderr, "shaker: %s\n", instance.error().c_str());
+        return 1;
+    }
+
     Pipeline pipeline{
         .core = shaker::DetectionCore{shaker::to_detection_params(config)},
         .command = config.command,
-        .debug = debug,
+        .device_filter = device_filter,
+        .debug = options.debug,
         .running_command = {},
     };
 
@@ -380,8 +555,13 @@ int run(const bool debug)
         return 1;
     }
 
-    std::printf("shaker %s: watching seat0 — pid %d\n",
-                shaker::project_version.data(), ::getpid());
+    if (pipeline.device_filter.empty()) {
+        std::printf("shaker %s: watching seat0 — pid %d\n",
+                    shaker::project_version.data(), ::getpid());
+    } else {
+        std::printf("shaker %s: watching seat0 (device filter: %s) — pid %d\n",
+                    shaker::project_version.data(), pipeline.device_filter.c_str(), ::getpid());
+    }
     std::fflush(stdout);
 
     shaker::UniqueFd signal_fd;
@@ -402,5 +582,5 @@ int main(int argc, char* argv[])
     if (parse_args(argc, argv, options, exit_code) == ParseResult::StopExit) {
         return exit_code;
     }
-    return run(options.debug);
+    return run(options);
 }

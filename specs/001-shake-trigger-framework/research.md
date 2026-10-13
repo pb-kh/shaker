@@ -119,6 +119,22 @@ files are never rewritten: only an exact template match proves the file
 is an untouched generated file. Covered by two dedicated tests
 (migrates + idempotent second load; hand-edited file untouched).
 
+**Addendum 3 (v0.2 device filter, user-requested)**: an optional `device`
+config key (plus a matching `--device` CLI override and a `--list-devices`
+introspection flag) restricts detection to devices whose libinput **name**
+or **sysname** contains a case-insensitive substring. Rationale: libinput's
+udev backend opens and delivers motion for *all* seat pointers; a user with
+a touchpad and a mouse cannot otherwise say "only shakes of the mouse
+count". Substring (not exact) match keeps the setting short and tolerant of
+libinput's appended group names (`Microsoft Surface 045E:09AF Touchpad`).
+The default stays empty → FR-015's "watch every pointer device" behavior is
+unchanged, so this is an additive contract change. Button state remains
+seat-wide: a drag on any device still suppresses detection. Implementation:
+`Config::device`, parsed in `src/config.cpp`; the gate lives in
+`device_matches_filter()` in `src/main.cpp`; `--list-devices` reuses the
+same matcher to mark `[*]`/`[ ]`. Covered by parser tests in
+`tests/test_config.cpp`.
+
 ## R-04: Shake detection definition and algorithm
 
 **Decision**: A shake is **motion sustained above a speed threshold for at

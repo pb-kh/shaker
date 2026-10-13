@@ -24,6 +24,7 @@ struct Config {
     double duration_sec = 1.0;
     double cooldown_sec = 2.0;
     std::string command;                // no default — required (US3)
+    std::string device;                 // optional: filter devices by name/sysname substring (case-insensitive)
 };
 
 struct ConfigError {

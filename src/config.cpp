@@ -59,6 +59,10 @@ constexpr std::string_view kDefaultConfigTemplate =
     "# How long (seconds) to ignore further shakes after one triggers.\n"
     "cooldown = 2.0\n"
     "\n"
+    "# Optional: only monitor devices whose name or sysname contains this string\n"
+    "# (case-insensitive). Leave empty to watch all pointer devices on seat0.\n"
+    "# device = \"Logitech\"\n"
+    "\n"
     "# Run through /bin/sh -c when a shake triggers (the only required key).\n"
     "command = \"notify-send 'Shake detected'\"\n";
 
@@ -333,6 +337,10 @@ std::expected<Config, ConfigError> parse_config(
     {
         if (key == "command") {
             config.command = content;
+            return std::nullopt;
+        }
+        if (key == "device") {
+            config.device = content;
             return std::nullopt;
         }
         if (key == "sensitivity" || key == "duration" || key == "cooldown") {
@@ -615,21 +623,26 @@ std::expected<Config, ConfigError> parse_config(
             continue;
         }
 
-        if (key == "command") {
+        if (key == "command" || key == "device") {
             if (value.front() != '"' && value.front() != '\'') {
+                const std::string keyname = std::string(key);
                 return std::unexpected(ConfigError{
-                    .detail = "config '" + path + "': key \"command\" has wrong "
+                    .detail = "config '" + path + "': key \"" + keyname + "\" has wrong "
                                   "type: expected string",
                     .path = path,
                 });
             }
-            std::string command_text;
-            if (parse_string(value, command_text) == nullptr) {
+            std::string text;
+            if (parse_string(value, text) == nullptr) {
                 return std::unexpected(
                     parse_error_at(path, line_number,
-                                   "malformed string value for \"command\""));
+                                   "malformed string value for \"" + std::string(key) + "\""));
             }
-            config.command = command_text;
+            if (key == "command") {
+                config.command = text;
+            } else if (key == "device") {
+                config.device = text;
+            }
             continue;
         }
 
